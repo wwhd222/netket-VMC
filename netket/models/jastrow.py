@@ -44,6 +44,6 @@ class Jastrow(nn.Module):
         kernel = kernel + kernel.T
 
         kernel, x_in = promote_dtype(kernel, x_in, dtype=None)
-        y = jnp.einsum("...i,ij,...j", x_in, kernel, x_in)
+        y = jnp.einsum("...i,ij,...j", x_in, kernel, x_in) #jax.np.einsum represents Einstein summation
 
         return y
