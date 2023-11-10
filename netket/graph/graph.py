@@ -259,7 +259,7 @@ def DoubledGraph(graph: AbstractGraph) -> Graph:
     dnodes1 = 2 * n_v
     dedges1 =dedges+ [(edge[0] + n_v, edge[1] + n_v) for edge in graph.edges()]
     #print(dedges1)
-    dedges1 =dedges+ [(i, i+ n_v) for i in range(n_v)]
+    dedges1 +=[(i, i+ n_v) for i in range(n_v)]
     #print(dedges1)
 
     dnodes2 = 2 * n_v
