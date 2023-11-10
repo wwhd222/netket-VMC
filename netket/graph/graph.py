@@ -268,7 +268,7 @@ def DoubledGraph(graph: AbstractGraph) -> Graph:
   
 
 
-    return Graph(n_nodes=dnodes1, edges=dedges1)，Graph(n_nodes=dnodes2, edges=dedges2)
+    return Graph(n_nodes=dnodes1, edges=dedges1),Graph(n_nodes=dnodes2, edges=dedges2)
 
 
 def disjoint_union(graph_1: Graph, graph_2: Graph) -> Graph:
