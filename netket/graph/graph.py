@@ -253,12 +253,22 @@ def DoubledGraph(graph: AbstractGraph) -> Graph:
     """
 
     dedges = list(graph.edges())
+    #print(dedges)
     n_v = graph.n_nodes
 
-    dnodes = 2 * n_v
-    dedges += [(edge[0] + n_v, edge[1] + n_v) for edge in graph.edges()]
+    dnodes1 = 2 * n_v
+    dedges1 =dedges+ [(edge[0] + n_v, edge[1] + n_v) for edge in graph.edges()]
+    #print(dedges1)
+    dedges1 =dedges+ [(i, i+ n_v) for i in range(n_v)]
+    #print(dedges1)
 
-    return Graph(n_nodes=dnodes, edges=dedges)
+    dnodes2 = 2 * n_v
+    # print(dedges1)
+    dedges2 =[(i, i + n_v) for i in range(n_v)]
+  
+
+
+    return Graph(n_nodes=dnodes1, edges=dedges1)，Graph(n_nodes=dnodes2, edges=dedges2)
 
 
 def disjoint_union(graph_1: Graph, graph_2: Graph) -> Graph:
