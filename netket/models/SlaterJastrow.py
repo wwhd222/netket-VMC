@@ -109,7 +109,7 @@ class Slater2nd(nn.Module):
                 for i, nf_i in enumerate(self.hilbert.n_fermions_per_spin)
             ]
 
-    def __call__(self, n):
+    def __call__(self, n, x_in: Array):
         """
         Assumes inputs are strings of 0,1 that specify which orbitals are occupied.
         Spin sectors are assumed to follow the SpinOrbitalFermion's factorisation,
@@ -121,6 +121,14 @@ class Slater2nd(nn.Module):
                 f"Dimension mismatch. Expected samples with {self.hilbert.size} "
                 f"degrees of freedom, but got a sample of shape {n.shape} ({n.shape[-1]} dof)."
             )
+        
+        nv = x_in.shape[-1]
+
+        kernel = self.param("kernel", self.kernel_init, (nv, nv), self.param_dtype)
+        kernel = kernel + kernel.T
+
+        kernel, x_in = promote_dtype(kernel, x_in, dtype=None)
+        y = jnp.einsum("...i,ij,...j", x_in, kernel, x_in)
 
         @partial(jnp.vectorize, signature="(n)->()")
         def log_sd(n):
@@ -141,29 +149,29 @@ class Slater2nd(nn.Module):
 
             return log_det_sum
 
-        return log_sd(n)
-@deprecate_dtype
-class Jastrow(nn.Module):
-    r"""
-    Jastrow wave function :math:`\Psi(s) = \exp(\sum_{ij} s_i W_{ij} s_j)`.
+        return log_sd(n)+y
+# @deprecate_dtype
+# class Jastrow(nn.Module):
+#     r"""
+#     Jastrow wave function :math:`\Psi(s) = \exp(\sum_{ij} s_i W_{ij} s_j)`.
 
-    The W matrix is stored as a non-symmetric matrix, and symmetrized
-    during computation by doing :code:`W = W + W.T` in the computation.
-    """
+#     The W matrix is stored as a non-symmetric matrix, and symmetrized
+#     during computation by doing :code:`W = W + W.T` in the computation.
+#     """
 
-    param_dtype: DType = jnp.complex128
-    """The dtype of the weights."""
-    kernel_init: NNInitFunc = normal()
-    """Initializer for the weights."""
+#     param_dtype: DType = jnp.complex128
+#     """The dtype of the weights."""
+#     kernel_init: NNInitFunc = normal()
+#     """Initializer for the weights."""
 
-    @nn.compact
-    def __call__(self, x_in: Array):
-        nv = x_in.shape[-1]
+#     @nn.compact
+#     def __call__(self, x_in: Array):
+#         nv = x_in.shape[-1]
 
-        kernel = self.param("kernel", self.kernel_init, (nv, nv), self.param_dtype)
-        kernel = kernel + kernel.T
+#         kernel = self.param("kernel", self.kernel_init, (nv, nv), self.param_dtype)
+#         kernel = kernel + kernel.T
 
-        kernel, x_in = promote_dtype(kernel, x_in, dtype=None)
-        y = jnp.einsum("...i,ij,...j", x_in, kernel, x_in)
+#         kernel, x_in = promote_dtype(kernel, x_in, dtype=None)
+#         y = jnp.einsum("...i,ij,...j", x_in, kernel, x_in)
 
-        return y
+#         return y
