@@ -36,6 +36,7 @@ Utilities for defining custom classes that can be used with jax transformations.
 from functools import partial
 
 import dataclasses
+import warnings
 from dataclasses import MISSING
 
 from flax import serialization
@@ -43,6 +44,8 @@ from flax import serialization
 import jax
 
 from .utils import _set_new_attribute, _create_fn, get_class_globals
+from .fields import _cache_name, Uninitialized, field, CachedProperty
+from .pytree import Pytree
 
 try:
     from dataclasses import _FIELDS
@@ -59,89 +62,12 @@ _PRE_INIT_NAME = "__pre_init__"
 _DATACLASS_INIT_NAME = "__init_dataclass__"
 
 
-def _cache_name(property_name):
-    return "__" + property_name + "_cache"
-
-
 def _hash_cache_name(class_name):
     return "__" + class_name + "_hash_cache"
 
 
 def _compute_cache_name(property_name):
     return "__" + property_name
-
-
-## Our stuff
-class _Uninitialized:
-    """
-    Sentinel value used to signal uninitialized values
-    """
-
-    def __repr__(self):
-        return "Uninitialized"
-
-
-Uninitialized = _Uninitialized()
-
-jax.tree_util.register_pytree_node(
-    _Uninitialized, lambda x: ((), Uninitialized), lambda *args: Uninitialized
-)
-
-
-def field(pytree_node=True, serialize=True, cache=False, **kwargs):
-    """Mark a field of a dataclass to be:
-
-    Args:
-        pytree_node: a leaf node in the pytree representation of this dataclass.
-            If False this must be hashable
-        serialize: If True the node is included in the serialization.
-            In general you should not specify this.
-        cache: If True this node is a cache and will be reset every time
-            fields are modified.
-    """
-    return dataclasses.field(
-        metadata={"pytree_node": pytree_node, "serialize": serialize, "cache": cache},
-        **kwargs,
-    )
-
-
-class CachedProperty:
-    """Sentinel attribute wrapper to signal that a method is a property
-    but must be cached.
-    """
-
-    def __init__(self, method, pytree_node=False):
-        self.name = method.__name__
-        self.cache_name = _cache_name(self.name)
-        self.method = method
-        self.pytree_node = pytree_node
-        self.type = method.__annotations__.get("return", MISSING)
-        self.doc = method.__doc__
-
-        if self.type is MISSING:
-            raise TypeError(
-                "Cached property {method} requires a return type annotation."
-            )
-
-    def __repr__(self):
-        return (
-            f"CachedProperty(name={self.name}, "
-            f"type={self.type}, pytree_node={self.pytree_node})"
-        )
-
-
-def property_cached(fun=None, pytree_node=False):
-    """Decorator to make the method behave as a property but cache the resulting value and
-    clears it upon replace.
-
-    Args:
-        pytree_node: a leaf node in the pytree representation of this dataclass.
-            If False this must be hashable
-    """
-    if fun is None:
-        return partial(property_cached, pytree_node=pytree_node)
-
-    return CachedProperty(fun, pytree_node=pytree_node)
 
 
 def _set_annotation(clz, attr, typ):
@@ -272,7 +198,12 @@ def purge_cache_fields(clz):
                 flds.pop(cname)
 
 
-def attach_preprocess_init(data_clz, *, globals={}, init_doc=MISSING, cache_hash=False):
+def attach_preprocess_init(
+    data_clz, *, globals=None, init_doc=MISSING, cache_hash=False, is_pytree=False
+):
+    if globals is None:
+        globals = {}
+
     # If there is no __pre_init__ method in the class, create a default
     # one calling pre init on super() if there is one.
     if _PRE_INIT_NAME not in data_clz.__dict__:
@@ -282,7 +213,6 @@ def attach_preprocess_init(data_clz, *, globals={}, init_doc=MISSING, cache_hash
                 args, kwargs = getattr(super(data_clz, self), _PRE_INIT_NAME)(
                     *args, **kwargs
                 )
-
             return args, kwargs
 
         _set_new_attribute(data_clz, _PRE_INIT_NAME, _preprocess_args_default)
@@ -298,6 +228,10 @@ def attach_preprocess_init(data_clz, *, globals={}, init_doc=MISSING, cache_hash
     body_lines = [
         "if not __skip_preprocess:",
         f"\targs, kwargs = {self_name}.{_PRE_INIT_NAME}(*args, **kwargs)",
+        "if True:" if is_pytree else "if False:",
+        "\t_args_pytree, _kwargs_pytree = kwargs['__base_init_args']",
+        "\tdel kwargs['__base_init_args']",
+        "\tsuper(data_class, self).__init__(*_args_pytree, **_kwargs_pytree)",
         f"{self_name}.{_DATACLASS_INIT_NAME}(*args, **kwargs)",
         "if __precompute_cached_properties:",
         f"\t{self_name}.{PRECOMPUTE_CACHED_PROPERTY_NAME}()",
@@ -308,6 +242,8 @@ def attach_preprocess_init(data_clz, *, globals={}, init_doc=MISSING, cache_hash
         body_lines.append(
             f"BUILTINS.object.__setattr__({self_name},{_hash_cache_name(data_clz.__name__)!r},Uninitialized)"
         )
+
+    globals["data_class"] = data_clz
 
     fun = _create_fn(
         "__init__",
@@ -328,11 +264,14 @@ def attach_preprocess_init(data_clz, *, globals={}, init_doc=MISSING, cache_hash
     setattr(data_clz, "__init__", fun)
 
 
-def replace_hash_method(data_clz, *, globals={}):
+def replace_hash_method(data_clz, *, globals=None):
     """
     Replace __hash__ by a method that checks if it has already been computed
     and returns the cached value otherwise.
     """
+    if globals is None:
+        globals = {}
+
     self_name = "self"
     hash_cache_name = _hash_cache_name(data_clz.__name__)
 
@@ -361,6 +300,13 @@ def dataclass(clz=None, *, init_doc=MISSING, cache_hash=False, _frozen=True):
     This behaves as a flax dataclass, that is a Frozen python dataclass, with a twist!
     See their documentation for standard behaviour.
 
+    .. warning::
+
+        This decorator should be used together with classes inheriting from
+        :ref:`netket.utils.struct.Pytree`. While simple cases will work
+        for now, it is not guaranteed that the behaviour will be always correct
+        and stable.
+
     The new functionalities added by NetKet are:
      - it is possible to define a method `__pre_init__(*args, **kwargs) ->
        Tuple[Tuple,Dict]` that processes the arguments and keyword arguments provided
@@ -387,11 +333,54 @@ def dataclass(clz=None, *, init_doc=MISSING, cache_hash=False, _frozen=True):
         _frozen: (default True) controls whether the resulting class is frozen or not.
             If it is not frozen, extra care should be taken.
     """
-
     if clz is None:
         return partial(
             dataclass, init_doc=init_doc, cache_hash=cache_hash, _frozen=_frozen
         )
+
+    is_pytree = Pytree in clz.__mro__
+
+    if is_pytree:
+        if not (clz._pytree__class_is_mutable ^ _frozen):
+            raise ValueError(
+                f"Inheriting from a mutable={clz._pytree__class_is_mutable} but _frozen={_frozen}"
+            )
+        # let the base class handle the frozeness
+        _frozen = False
+
+        if _PRE_INIT_NAME in clz.__dict__:
+            msg = f"""
+            You defined `__pre_init__(*args, **kwargs)` in a netket
+            dataclass (a class decorated with @nk.utils.struct.dataclass) which
+            inherits from a `nk.utils.struct.Pytree`.
+
+            The class is {type(clz)}.
+
+            This behaviour is not supported and might break. Please remove
+            the decorator and just inherit from the base class, defining
+            a standard `__init__` method which calls `super().__init__(...)`
+            as usual.
+
+            If you need help, reach out with us.
+            """
+            warnings.warn(msg, category=FutureWarning, stacklevel=1)
+
+        if "__post_init__" in clz.__dict__:
+            msg = f"""
+            You defined `__post_init__(self)` in a netket
+            dataclass (a class decorated with @nk.utils.struct.dataclass) which
+            inherits from a `nk.utils.struct.Pytree`.
+
+            The class is {type(clz)}.
+
+            This behaviour is not supported and might break. Please remove
+            the decorator and just inherit from the base class, defining
+            a standard `__init__` method which calls `super().__init__(...)`
+            as usual.
+
+            If you need help, reach out with us.
+            """
+            warnings.warn(msg, category=FutureWarning, stacklevel=1)
 
     # get globals of the class to put generated methods in there
     _globals = get_class_globals(clz)
@@ -400,13 +389,23 @@ def dataclass(clz=None, *, init_doc=MISSING, cache_hash=False, _frozen=True):
     process_cached_properties(clz, globals=_globals)
     # create the dataclass
     data_clz = dataclasses.dataclass(frozen=_frozen)(clz)
+
     purge_cache_fields(data_clz)
     # attach the custom preprocessing of init arguments
     attach_preprocess_init(
-        data_clz, globals=_globals, init_doc=init_doc, cache_hash=cache_hash
+        data_clz,
+        globals=_globals,
+        init_doc=init_doc,
+        cache_hash=cache_hash,
+        is_pytree=is_pytree,
     )
     if cache_hash:
         replace_hash_method(data_clz, globals=_globals)
+
+    # if it's an 'auto-style PyTree', use standard dataclass-logic
+    # and do not register it with jax/flax
+    if is_pytree:
+        return data_clz
 
     # flax stuff: identify states
     meta_fields = []
