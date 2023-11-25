@@ -8,7 +8,7 @@ from netket.experimental.hilbert import SpinOrbitalFermions
 from netket.nn.masked_linear import default_kernel_init
 from netket import jax as nkjax
 
-class SlaterJastrow(nn.Module):
+class slater_jastrow(nn.Module):
     hilbert: SpinOrbitalFermions
     kernel_init: NNInitFunc = normal()
     param_dtype: DType = jnp.complex128
