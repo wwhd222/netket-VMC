@@ -29,15 +29,15 @@ class slater_jastrow(nn.Module):
         self.orbitals = [self.M for _ in self.hilbert.n_fermions_per_spin]
 
     def log_jastrow(self, x_in: Array):
-    # Determine the highest precision data type between kernel and x_in
-    dtype = jnp.result_type(self.kernel, x_in)
+        # Determine the highest precision data type between kernel and x_in
+        dtype = jnp.result_type(self.kernel, x_in)
     
-    # Convert both kernel and x_in to this highest precision data type
-    kernel = self.kernel.astype(dtype)
-    x_in = x_in.astype(dtype)
+        # Convert both kernel and x_in to this highest precision data type
+        kernel = self.kernel.astype(dtype)
+        x_in = x_in.astype(dtype)
 
-    y = jnp.einsum("...i,ij,...j", x_in, kernel, x_in)
-    return y
+        y = jnp.einsum("...i,ij,...j", x_in, kernel, x_in)
+        return y
 
     def log_slater_determinant(self, n):
         @partial(jnp.vectorize, signature="(n)->()")
