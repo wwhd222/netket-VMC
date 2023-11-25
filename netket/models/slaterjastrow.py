@@ -16,7 +16,7 @@ class slater_jastrow(nn.Module):
 
     def setup(self):
         nv = self.hilbert.size
-        self.kernel = self.param("kernel", self.kernel_init, (nv, nv), jnp.float64)
+        self.kernel = self.param("kernel", self.kernel_init, (nv, nv), self.param_dtype)
         self.kernel = self.kernel + self.kernel.T
 
         # Setting up the orbital parameters (assuming restricted setting)
