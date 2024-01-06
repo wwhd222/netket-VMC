@@ -266,7 +266,7 @@ def DoubledGraph(graph: AbstractGraph) -> Graph:
     # print(dedges1)
     dedges2 =[(i, i + n_v) for i in range(n_v)]
   
-    #the first return gives out connected graph(with interlayer edges), the second one gives out disjoint bilayer
+    #the first return gives out connected graph(with interlayer edges), the second one gives out interlayer edges
 
     return Graph(n_nodes=dnodes1, edges=dedges1),Graph(n_nodes=dnodes2, edges=dedges2)
 
