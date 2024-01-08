@@ -66,8 +66,6 @@ class LocalLiouvillian(AbstractSuperOperator):
 
     """
 
-    __module__ = "netket.operator"
-
     def __init__(
         self,
         ham: DiscreteOperator,
