@@ -40,7 +40,7 @@ class SlaterJastrow(nn.Module):
 
         # Setup for Jastrow part
         nv = self.hilbert.size
-        self.jastrow_kernel = self.param("jastrow_kernel", custom_init, (nv * (nv - 1) // 2,), complex)
+        self.jastrow_kernel = self.param("jastrow_kernel", custom_init, (nv * (nv - 1) // 2,),self.param_dtype)
 
     def log_slater(self, n):
         R = n.nonzero(size=self.hilbert.n_fermions)[0]
