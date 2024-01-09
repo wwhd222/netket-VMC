@@ -7,7 +7,7 @@ from netket import jax as nkjax
 from jax.nn.initializers import uniform
 from jax.nn.initializers import normal
 
-def custom_init(shape, dtype=jnp.float32, *args):
+def custom_init(shape, dtype=jnp.complex128, *args):
 
     return normal()(shape, dtype)
 
