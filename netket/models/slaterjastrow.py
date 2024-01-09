@@ -5,6 +5,7 @@ from netket.experimental.hilbert import SpinOrbitalFermions
 from netket.nn.masked_linear import default_kernel_init
 from netket import jax as nkjax
 from jax.nn.initializers import uniform
+from jax.nn.initializers import normal
 
 def custom_init(shape, dtype=jnp.float32, *args):
 
