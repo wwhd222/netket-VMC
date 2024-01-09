@@ -1,4 +1,4 @@
-import flax.linen as nn
+import netket.nn as nn
 import jax.numpy as jnp
 from jax.nn.initializers import normal
 from functools import partial
