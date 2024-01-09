@@ -81,7 +81,7 @@ class slater_jastrow(nn.Module):
 
             return log_det_sum
 
-        return log_sd(n)
+            return log_sd(n)
 
     def __call__(self, n):
         if not n.shape[-1] == self.hilbert.size:
