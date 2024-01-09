@@ -4,6 +4,16 @@ from netket.utils.types import DType, Array, NNInitFunc
 from netket.experimental.hilbert import SpinOrbitalFermions
 from netket.nn.masked_linear import default_kernel_init
 from netket import jax as nkjax
+from jax.nn.initializers import uniform
+
+def custom_init(shape, dtype=jnp.float32):
+    if len(shape) == 1:
+        # For 1D shape, use uniform distribution with appropriate bounds
+        bound = 1 / shape[0]
+        return normal()(shape, dtype)
+    else:
+        # For 2D or higher dimensions, use normal distribution
+        return normal()(shape, dtype)
 
 class SlaterJastrow(nn.Module):
     hilbert: SpinOrbitalFermions
@@ -34,7 +44,7 @@ class SlaterJastrow(nn.Module):
 
         # Setup for Jastrow part
         nv = self.hilbert.size
-        self.jastrow_kernel = self.param("jastrow_kernel", self.kernel_init, (nv * (nv - 1) // 2,), self.param_dtype)
+        self.jastrow_kernel = self.param("jastrow_kernel", custom_init, (nv * (nv - 1) // 2,), self.param_dtype)
 
     def log_slater(self, n):
         R = n.nonzero(size=self.hilbert.n_fermions)[0]
