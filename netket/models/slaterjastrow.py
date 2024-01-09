@@ -6,14 +6,9 @@ from netket.nn.masked_linear import default_kernel_init
 from netket import jax as nkjax
 from jax.nn.initializers import uniform
 
-def custom_init(shape, dtype=jnp.float32):
-    if len(shape) == 1:
-        # For 1D shape, use uniform distribution with appropriate bounds
-        bound = 1 / shape[0]
-        return normal()(shape, dtype)
-    else:
-        # For 2D or higher dimensions, use normal distribution
-        return normal()(shape, dtype)
+def custom_init(shape, dtype=jnp.float32, *args):
+
+    return normal()(shape, dtype)
 
 class SlaterJastrow(nn.Module):
     hilbert: SpinOrbitalFermions
