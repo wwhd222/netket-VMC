@@ -62,8 +62,8 @@ class slater_jastrow(nn.Module):
 
         return y
 
-   @partial(jnp.vectorize, signature="(n)->()")
-        def log_sd(n):
+    @partial(jnp.vectorize, signature="(n)->()")
+    def log_sd(n):
             # Find the positions of the occupied sites
             R = n.nonzero(size=self.hilbert.n_fermions)[0]
             log_det_sum = 0
