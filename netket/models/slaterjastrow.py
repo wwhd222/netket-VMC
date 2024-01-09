@@ -7,7 +7,7 @@ from netket import jax as nkjax
 from jax.nn.initializers import uniform
 from jax.nn.initializers import normal
 
-def custom_init(shape, dtype=jnp.float64, *args):
+def custom_init(shape, dtype=jnp.complex128, *args):
 
     return normal()(shape, dtype)
 
@@ -15,7 +15,7 @@ class SlaterJastrow(nn.Module):
     hilbert: SpinOrbitalFermions
     restricted: bool = True
     kernel_init: NNInitFunc = default_kernel_init
-    param_dtype: DType = jnp.float64
+    param_dtype: DType = jnp.complex128
 
     def setup(self):
         # Setup for Slater part
@@ -40,7 +40,7 @@ class SlaterJastrow(nn.Module):
 
         # Setup for Jastrow part
         nv = self.hilbert.size
-        self.jastrow_kernel = self.param("jastrow_kernel", custom_init, (nv * (nv - 1) // 2,), self.param_dtype)
+        self.jastrow_kernel = self.param("jastrow_kernel", custom_init, (nv * (nv - 1) // 2,), complex)
 
     def log_slater(self, n):
         R = n.nonzero(size=self.hilbert.n_fermions)[0]
