@@ -7,7 +7,7 @@ from netket import jax as nkjax
 from jax.nn.initializers import uniform
 from jax.nn.initializers import normal
 
-def custom_init(shape, dtype=jnp.complex128):
+def custom_init(shape, dtype=jnp.complex128, seed=None):
     return normal()(shape, dtype=dtype)
 
 class SlaterJastrow(nn.Module):
