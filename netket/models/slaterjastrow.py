@@ -7,9 +7,8 @@ from netket import jax as nkjax
 from jax.nn.initializers import uniform
 from jax.nn.initializers import normal
 
-def custom_init(shape, dtype=jnp.complex128, *args):
-
-    return normal()(shape, dtype)
+def custom_init(shape, dtype=jnp.complex128):
+    return normal()(shape, dtype=dtype)
 
 class SlaterJastrow(nn.Module):
     hilbert: SpinOrbitalFermions
