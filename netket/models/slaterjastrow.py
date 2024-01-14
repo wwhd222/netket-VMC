@@ -53,11 +53,13 @@ class slater_jastrow(nn.Module):
         jastrow_kernel = self.jastrow_kernel
         W = jnp.zeros((nv, nv), dtype=self.param_dtype).at[il].set(jastrow_kernel)
 
-        # Compute Jastrow term
-        W, x_in = jnp.promote_types(W, x_in)
-        y = jnp.einsum("...i,ij,...j", x_in, W, x_in)
+        # Ensure W and x_in have the same data type
+        W = W.astype(x_in.dtype)
+        x_in = x_in.astype(W.dtype)
 
+        y = jnp.einsum("...i,ij,...j", x_in, W, x_in)
         return y
+
 
     def log_sd(self, n):
         # Compute Slater determinant
