@@ -67,17 +67,44 @@ class slater_jastrow(nn.Module):
         return y
 
     def __call__(self, n):
+        """
+        Assumes inputs are strings of 0,1 that specify which orbitals are occupied.
+        Spin sectors are assumed to follow the SpinOrbitalFermion's factorisation,
+        meaning that the first `n_orbitals` entries correspond to sector -1, the
+        second `n_orbitals` correspond to 0 ... etc.
+        """
         if not n.shape[-1] == self.hilbert.size:
             raise ValueError(
                 f"Dimension mismatch. Expected samples with {self.hilbert.size} "
-                f"degrees of freedom, but got a sample of shape {n.shape}."
+                f"degrees of freedom, but got a sample of shape {n.shape} ({n.shape[-1]} dof)."
             )
 
+        @partial(jnp.vectorize, signature="(n)->()")
+        def log_sd(n):
+            # Find the positions of the occupied sites
+            R = n.nonzero(size=self.hilbert.n_fermions)[0]
+            log_det_sum = 0
+            i_start = 0
+            for i, (n_fermions_i, M_i) in enumerate(
+                zip(self.hilbert.n_fermions_per_spin, self.orbitals)
+            ):
+                # convert global orbital positions to spin-sector-local positions
+                R_i = R[i_start : i_start + n_fermions_i] - i * self.hilbert.n_orbitals
+                # extract the corresponding Nf x Nf submatrix
+                A_i = M_i[R_i]
+
+                log_det_sum = log_det_sum + nkjax.logdet_cmplx(A_i)
+                i_start = n_fermions_i
+
+            return log_det_sum
+
+        return log_sd(n)
+        
         # Compute Jastrow term
         y = self.log_jastrow(n)
 
         # Compute log-slater determinant
-        log_sd = self.log_slater_determinant(n)
+        log_sd = self.log_sd(n)
 
         return log_sd + y
 
