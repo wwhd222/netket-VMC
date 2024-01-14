@@ -2,6 +2,7 @@ import flax.linen as nn
 import jax.numpy as jnp
 from jax.nn.initializers import normal
 from functools import partial
+from flax.linen.dtypes import promote_dtype
 import numpy as np
 
 from netket.utils.types import DType, Array, NNInitFunc
@@ -53,9 +54,8 @@ class slater_jastrow(nn.Module):
         jastrow_kernel = self.jastrow_kernel
         W = jnp.zeros((nv, nv), dtype=self.param_dtype).at[il].set(jastrow_kernel)
 
-        # Ensure W and x_in have the same data type
-        W = W.astype(x_in.dtype)
-        x_in = x_in.astype(W.dtype)
+        # Use promote_dtype to ensure W and x_in have the same data type
+        W, x_in = promote_dtype(W, x_in, dtype=None)
 
         y = jnp.einsum("...i,ij,...j", x_in, W, x_in)
         return y
