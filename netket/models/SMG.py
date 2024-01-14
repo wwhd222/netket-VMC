@@ -14,7 +14,7 @@ class slater_jastrow(nn.Module):
     param_dtype: DType = jnp.complex128
     restricted: bool = True  # Assuming a restricted setting for simplicity
 
-   def __post_init__(self):
+    def __post_init__(self):
         if not isinstance(self.hilbert, SpinOrbitalFermions):
             raise TypeError(
                 "Slater2nd only supports 2nd quantised fermionic hilbert spaces."
@@ -38,8 +38,6 @@ class slater_jastrow(nn.Module):
         super().__post_init__()
 
     def setup(self):
-        # Every determinant is a matrix of shape (n_orbitals, n_fermions_i) where
-        # n_fermions_i is the number of fermions in the i-th spin sector.
         if self.restricted:
             M = self.param(
                 "M",
@@ -60,37 +58,12 @@ class slater_jastrow(nn.Module):
                 for i, nf_i in enumerate(self.hilbert.n_fermions_per_spin)
             ]
 
-    def __call__(self, n):
-        """
-        Assumes inputs are strings of 0,1 that specify which orbitals are occupied.
-        Spin sectors are assumed to follow the SpinOrbitalFermion's factorisation,
-        meaning that the first `n_orbitals` entries correspond to sector -1, the
-        second `n_orbitals` correspond to 0 ... etc.
-        """
-        if not n.shape[-1] == self.hilbert.size:
-            raise ValueError(
-                f"Dimension mismatch. Expected samples with {self.hilbert.size} "
-                f"degrees of freedom, but got a sample of shape {n.shape} ({n.shape[-1]} dof)."
-            )
-
-        @partial(jnp.vectorize, signature="(n)->()")
-        def log_sd(n):
-            # Find the positions of the occupied sites
-            R = n.nonzero(size=self.hilbert.n_fermions)[0]
-            log_det_sum = 0
-            i_start = 0
-            for i, (n_fermions_i, M_i) in enumerate(
-                zip(self.hilbert.n_fermions_per_spin, self.orbitals)
-            ):
-                # convert global orbital positions to spin-sector-local positions
-                R_i = R[i_start : i_start + n_fermions_i] - i * self.hilbert.n_orbitals
-                # extract the corresponding Nf x Nf submatrix
-                A_i = M_i[R_i]
-
-                log_det_sum = log_det_sum + nkjax.logdet_cmplx(A_i)
-                i_start = n_fermions_i
-
-            return log_sd
+    def log_jastrow(self, x_in: Array):
+        dtype = jnp.result_type(self.kernel, x_in)
+        kernel = self.kernel.astype(dtype)
+        x_in = x_in.astype(dtype)
+        y = jnp.einsum("...i,ij,...j", x_in, kernel, x_in)
+        return y
 
     def __call__(self, n):
         if not n.shape[-1] == self.hilbert.size:
@@ -106,3 +79,4 @@ class slater_jastrow(nn.Module):
         log_sd = self.log_slater_determinant(n)
 
         return log_sd + y
+
