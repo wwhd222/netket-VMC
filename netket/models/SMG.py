@@ -2,6 +2,7 @@ import flax.linen as nn
 import jax.numpy as jnp
 from jax.nn.initializers import normal
 from functools import partial
+import numpy as np
 
 from netket.utils.types import DType, Array, NNInitFunc
 from netket.experimental.hilbert import SpinOrbitalFermions
