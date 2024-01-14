@@ -11,55 +11,42 @@ from netket import jax as nkjax
 
 class slater_jastrow(nn.Module):
     hilbert: SpinOrbitalFermions
-    jastrow_kernel_init: NNInitFunc = normal()
-    slater_kernel_init: NNInitFunc = normal()
+    kernel_init: NNInitFunc = normal()  # 使用一个通用的初始化函数
     param_dtype: DType = jnp.complex128
-    restricted: bool = True  # Assuming a restricted setting for simplicity
+    restricted: bool = True
 
     def setup(self):
-        # Slater part setup
+        nv = self.hilbert.size
         if self.restricted:
-            self.M = self.param(
-                "M",
-                self.slater_kernel_init,
+            self.kernel = self.param(
+                "kernel",
+                self.kernel_init,
                 (self.hilbert.n_orbitals, self.hilbert.n_fermions_per_spin[0]),
                 self.param_dtype,
             )
-            self.orbitals = [self.M for _ in self.hilbert.n_fermions_per_spin]
+            self.orbitals = [self.kernel for _ in self.hilbert.n_fermions_per_spin]
         else:
             self.orbitals = [
                 self.param(
-                    f"M_{i}",
-                    self.slater_kernel_init,
+                    f"kernel_{i}",
+                    self.kernel_init,
                     (self.hilbert.n_orbitals, nf_i),
                     self.param_dtype,
                 )
                 for i, nf_i in enumerate(self.hilbert.n_fermions_per_spin)
             ]
 
-        # Jastrow part setup
-        nv = self.hilbert.size
-        self.jastrow_kernel = self.param(
-            "jastrow_kernel", 
-            self.jastrow_kernel_init, 
-            (nv * (nv - 1) // 2,), 
-            self.param_dtype
-        )
-
     def log_jastrow(self, x_in: Array):
         nv = x_in.shape[-1]
         il = jnp.tril_indices(nv, k=-1)
-
-        # Retrieve and reshape Jastrow kernel
-        jastrow_kernel = self.jastrow_kernel
+        
+        # Reshape the kernel for Jastrow part
+        jastrow_kernel = self.kernel.ravel()[:nv * (nv - 1) // 2]
         W = jnp.zeros((nv, nv), dtype=self.param_dtype).at[il].set(jastrow_kernel)
 
-        # Use promote_dtype to ensure W and x_in have the same data type
         W, x_in = promote_dtype(W, x_in, dtype=None)
-
         y = jnp.einsum("...i,ij,...j", x_in, W, x_in)
         return y
-
 
     def log_sd(self, n):
         # Compute Slater determinant
