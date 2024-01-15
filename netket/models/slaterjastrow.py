@@ -39,7 +39,22 @@ class slater_jastrow(nn.Module):
         y = jnp.einsum("...i,ij,...j", x_in, kernel, x_in)
         return y
 
-    def log_slater_determinant(self, n):
+    
+
+    def __call__(self, n):
+         """
+        Assumes inputs are strings of 0,1 that specify which orbitals are occupied.
+        Spin sectors are assumed to follow the SpinOrbitalFermion's factorisation,
+        meaning that the first `n_orbitals` entries correspond to sector -1, the
+        second `n_orbitals` correspond to 0 ... etc.
+        """
+        if not n.shape[-1] == self.hilbert.size:
+            raise ValueError(
+                f"Dimension mismatch. Expected samples with {self.hilbert.size} "
+                f"degrees of freedom, but got a sample of shape {n.shape}."
+            )
+            
+        def log_slater_determinant(self, n):
         @partial(jnp.vectorize, signature="(n)->()")
         def log_sd(n):
             R = n.nonzero(size=self.hilbert.n_fermions)[0]
@@ -54,15 +69,6 @@ class slater_jastrow(nn.Module):
                 i_start += n_fermions_i
 
             return log_det_sum
-
-        return log_sd(n)
-
-    def __call__(self, n):
-        if not n.shape[-1] == self.hilbert.size:
-            raise ValueError(
-                f"Dimension mismatch. Expected samples with {self.hilbert.size} "
-                f"degrees of freedom, but got a sample of shape {n.shape}."
-            )
 
         # Compute Jastrow term
         y = self.log_jastrow(n)
