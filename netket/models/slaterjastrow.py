@@ -25,10 +25,10 @@ class slater_jastrow(nn.Module):
             self.kernel_init,
             (self.hilbert.n_orbitals, self.hilbert.n_fermions_per_spin[0]),
             self.param_dtype,
-                )
+        )
         self.orbitals = [self.M for _ in self.hilbert.n_fermions_per_spin]
 
-def log_jastrow(self, x_in: Array):
+    def log_jastrow(self, x_in: Array):
         # Determine the highest precision data type between kernel and x_in
         dtype = jnp.result_type(self.kernel, x_in)
     
@@ -39,41 +39,35 @@ def log_jastrow(self, x_in: Array):
         y = jnp.einsum("...i,ij,...j", x_in, kernel, x_in)
         return y
 
-    
-
-def __call__(self, n):
-    """
-        Assumes inputs are strings of 0,1 that specify which orbitals are occupied.
-        Spin sectors are assumed to follow the SpinOrbitalFermion's factorisation,
-        meaning that the first `n_orbitals` entries correspond to sector -1, the
-        second `n_orbitals` correspond to 0 ... etc.
-        """
-        if not n.shape[-1] == self.hilbert.size:
-            raise ValueError(
-                f"Dimension mismatch. Expected samples with {self.hilbert.size} "
-                f"degrees of freedom, but got a sample of shape {n.shape}."
-                    )
-            
-def log_slater_determinant(self, n):
-@partial(jnp.vectorize, signature="(n)->()")
+    def log_slater_determinant(self, n):
+        @partial(jnp.vectorize, signature="(n)->()")
         def log_sd(n):
             R = n.nonzero(size=self.hilbert.n_fermions)[0]
             log_det_sum = 0
             i_start = 0
             for i, (n_fermions_i, M_i) in enumerate(
                 zip(self.hilbert.n_fermions_per_spin, self.orbitals)
-):
+            ):
                 R_i = R[i_start : i_start + n_fermions_i] - i * self.hilbert.n_orbitals
                 A_i = M_i[R_i]
                 log_det_sum = log_det_sum + nkjax.logdet_cmplx(A_i)
                 i_start += n_fermions_i
 
-                    return log_det_sum
+            return log_det_sum
+
+        return log_sd(n)
+
+    def __call__(self, n):
+        if not n.shape[-1] == self.hilbert.size:
+            raise ValueError(
+                f"Dimension mismatch. Expected samples with {self.hilbert.size} "
+                f"degrees of freedom, but got a sample of shape {n.shape}."
+            )
 
         # Compute Jastrow term
-                        y = self.log_jastrow(n)
+        y = self.log_jastrow(n)
 
         # Compute log-slater determinant
         log_sd = self.log_slater_determinant(n)
 
-        return log_sd + y 
+        return log_sd + y  
