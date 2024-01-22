@@ -66,13 +66,13 @@ def default_qgt_matrix(variational_state, solver=False, **kwargs):
         return partial(QGTJacobianDense, **kwargs)
 
     # TODO: Remove this once all QGT support diag_scale.
-    has_diag_rescale = kwargs.pop("diag_scale", None) is not None
+    has_diag_rescale = kwargs.get("diag_scale") is not None
 
     # arbitrary heuristic: if the network's parameters has many leaves
     # (an rbm has 3) then JacobianDense might be faster
     # the numbers chosen below are rather arbitrary and should be tuned.
     if (n_param_leaves > 6 and n_params > 800) or has_diag_rescale:
-        if nkjax.tree_ishomogeneous(variational_state.variables):
+        if nkjax.tree_ishomogeneous(variational_state.parameters):
             return partial(QGTJacobianDense, **kwargs)
         else:
             return partial(QGTJacobianPyTree, **kwargs)

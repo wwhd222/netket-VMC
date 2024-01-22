@@ -82,6 +82,12 @@ class IsingJax(IsingBase, DiscreteJaxOperator):
             self.hilbert, graph=self.edges, h=self.h, J=self.J, dtype=self.dtype
         )
 
+    def to_local_operator(self):
+        # The hamiltonian
+        ha = super().to_local_operator()
+
+        return ha.to_jax_operator()
+
     def tree_flatten(self):
         data = (self.h, self.J, self.edges)
         metadata = {"hilbert": self.hilbert, "dtype": self.dtype}
