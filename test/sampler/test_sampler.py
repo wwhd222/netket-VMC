@@ -17,22 +17,18 @@ from jax import numpy as jnp
 
 from .. import common
 
-import netket as nk
-from netket.hilbert import DiscreteHilbert, Particle
-from netket.utils import mpi
-from netket.jax.sharding import device_count_per_rank
-
-from netket import experimental as nkx
-
 import numpy as np
 import pytest
 from scipy.stats import combine_pvalues, chisquare, multivariate_normal, kstest
 import jax
 from jax.nn.initializers import normal
 
-from jax.config import config
+import netket as nk
+from netket.hilbert import DiscreteHilbert, Particle
+from netket.utils import array_in, mpi
+from netket.jax.sharding import device_count_per_rank
 
-config.update("jax_enable_x64", True)
+from netket import experimental as nkx
 
 
 pytestmark = common.skipif_mpi
@@ -61,7 +57,7 @@ hib = nk.hilbert.Fock(n_max=1, N=g.n_nodes, n_particles=1)
 hib_u = nk.hilbert.Fock(n_max=3, N=g.n_nodes)
 hi_fermion = nk.experimental.hilbert.SpinOrbitalFermions(g.n_nodes, n_fermions=2)
 hi_fermion_spin = nk.experimental.hilbert.SpinOrbitalFermions(
-    g.n_nodes, s=1 / 2, n_fermions=(2, 2)
+    g.n_nodes, s=1 / 2, n_fermions_per_spin=(2, 2)
 )
 
 samplers["Exact: Spin"] = nk.sampler.ExactSampler(hi)
@@ -264,7 +260,7 @@ def test_states_in_hilbert(sampler, model_and_weights):
         samples, _ = sampler.sample(ma, w, chain_length=chain_length)
         assert samples.shape == (sampler.n_chains, chain_length, hi.size)
         for sample in np.asarray(samples).reshape(-1, hi.size):
-            assert sample in all_states
+            assert array_in(sample, all_states)
 
     elif isinstance(hi, Particle):
         ma, w = model_and_weights(hi, sampler)
@@ -542,7 +538,7 @@ def test_fermions_spin_exchange():
     # test that the graph correctly creates a disjoint graph for the spinful case
     g = nk.graph.Hypercube(length=4, n_dim=1)
     hi_fermion_spin = nk.experimental.hilbert.SpinOrbitalFermions(
-        g.n_nodes, s=1 / 2, n_fermions=(2, 2)
+        g.n_nodes, s=1 / 2, n_fermions_per_spin=(2, 2)
     )
 
     sampler = nkx.sampler.MetropolisParticleExchange(
@@ -556,3 +552,28 @@ def test_fermions_spin_exchange():
     )
     nodes = np.unique(sampler.rule.clusters)
     assert np.allclose(nodes, np.arange(hi_fermion_spin.size))
+
+
+def test_multiplerules_pt(model_and_weights):
+    hi = ha.hilbert
+    sa = nkx.sampler.MetropolisPtSampler(
+        hi,
+        rule=nk.sampler.rules.MultipleRules(
+            [nk.sampler.rules.LocalRule(), nk.sampler.rules.HamiltonianRule(ha)],
+            [0.8, 0.2],
+        ),
+        n_replicas=4,
+        sweep_size=hib_u.size * 4,
+    )
+
+    ma, w = model_and_weights(hi, sa)
+
+    sampler_state = sa.init_state(ma, w, seed=SAMPLER_SEED)
+    sampler_state = sa.reset(ma, w, state=sampler_state)
+    samples, sampler_state = sa.sample(
+        ma,
+        w,
+        state=sampler_state,
+        chain_length=10,
+    )
+    assert samples.shape == (sa.n_chains, 10, hi.size)

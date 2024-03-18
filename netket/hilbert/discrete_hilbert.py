@@ -20,22 +20,10 @@ from functools import reduce
 import numpy as np
 
 from netket.utils.types import Array
-from netket.utils.numbers import is_scalar
 from netket.errors import HilbertIndexingDuringTracingError, concrete_or_error
 
 from .abstract_hilbert import AbstractHilbert
-
-max_states = np.iinfo(np.int32).max
-"""int: Maximum number of states that can be indexed"""
-
-
-def _is_indexable(shape):
-    """
-    Returns whether a discrete Hilbert space of shape `shape` is
-    indexable (i.e., its total number of states is below the maximum).
-    """
-    log_max = np.log(max_states)
-    return np.sum(np.log(shape)) <= log_max
+from .index import is_indexable
 
 
 class DiscreteHilbert(AbstractHilbert):
@@ -132,9 +120,7 @@ class DiscreteHilbert(AbstractHilbert):
         """
         raise NotImplementedError()  # pragma: no cover
 
-    def numbers_to_states(
-        self, numbers: Union[int, np.ndarray], out: Optional[np.ndarray] = None
-    ) -> np.ndarray:
+    def numbers_to_states(self, numbers: Union[int, np.ndarray]) -> np.ndarray:
         r"""Returns the quantum numbers corresponding to the n-th basis state
         for input n.
 
@@ -145,27 +131,25 @@ class DiscreteHilbert(AbstractHilbert):
         Args:
             numbers (numpy.array): Batch of input numbers to be converted into arrays of
                 quantum numbers.
-            out: Optional Array of quantum numbers corresponding to numbers.
         """
 
         numbers = concrete_or_error(
             np.asarray, numbers, HilbertIndexingDuringTracingError
         )
 
-        if out is None:
-            out = np.empty((np.atleast_1d(numbers).shape[0], self.size))
+        numbers_r = np.asarray(np.reshape(numbers, -1))
 
         if np.any(numbers >= self.n_states):
             raise ValueError("numbers outside the range of allowed states")
 
-        if is_scalar(numbers):
-            return self._numbers_to_states(np.atleast_1d(numbers), out=out)[0, :]
-        else:
-            return self._numbers_to_states(numbers, out=out)
+        if not self.is_indexable:
+            raise RuntimeError("The hilbert space is too large to be indexed.")
 
-    def states_to_numbers(
-        self, states: np.ndarray, out: Optional[np.ndarray] = None
-    ) -> Union[int, np.ndarray]:
+        out = self._numbers_to_states(numbers_r)
+
+        return out.reshape((*numbers.shape, self.size))
+
+    def states_to_numbers(self, states: np.ndarray) -> Union[int, np.ndarray]:
         r"""Returns the basis state number corresponding to given quantum states.
 
         The states are given in a batch, such that states[k] has shape (hilbert.size).
@@ -173,12 +157,11 @@ class DiscreteHilbert(AbstractHilbert):
 
         Args:
             states: Batch of states to be converted into the corresponding integers.
-            out: Array of integers such that out[k]=Index(states[k]).
-                 If None, memory is allocated.
 
         Returns:
-            numpy.darray: Array of integers corresponding to out.
+            numpy.darray: Array of integers corresponding to states.
         """
+
         if states.shape[-1] != self.size:
             raise ValueError(
                 f"Size of this state ({states.shape[-1]}) not"
@@ -191,10 +174,10 @@ class DiscreteHilbert(AbstractHilbert):
 
         states_r = np.asarray(np.reshape(states, (-1, states.shape[-1])))
 
-        if out is None:
-            out = np.empty(states_r.shape[:-1], dtype=np.int64)
+        if not self.is_indexable:
+            raise RuntimeError("The hilbert space is too large to be indexed.")
 
-        out = self._states_to_numbers(states_r, out=out.reshape(-1))
+        out = self._states_to_numbers(states_r)
 
         if states.ndim == 1:
             return out[0]
@@ -211,21 +194,19 @@ class DiscreteHilbert(AbstractHilbert):
         for i in range(self.n_states):
             yield self.numbers_to_states(i).reshape(-1)
 
-    def all_states(self, out: Optional[np.ndarray] = None) -> np.ndarray:
+    def all_states(self) -> np.ndarray:
         r"""Returns all valid states of the Hilbert space.
 
         Throws an exception if the space is not indexable.
-
-        Args:
-            out: an optional pre-allocated output array
 
         Returns:
             A (n_states x size) batch of states. this corresponds
             to the pre-allocated array if it was passed.
         """
-        numbers = np.arange(0, self.n_states, dtype=np.int64)
 
-        return self.numbers_to_states(numbers, out)
+        numbers = np.arange(0, self.n_states, dtype=np.int32)
+
+        return self.numbers_to_states(numbers)
 
     def states_to_local_indices(self, x: Array):
         r"""Returns a tensor with the same shape of `x`, where all local
@@ -254,7 +235,7 @@ class DiscreteHilbert(AbstractHilbert):
         """Whether the space can be indexed with an integer"""
         if not self.is_finite:
             return False
-        return _is_indexable(self.shape)
+        return is_indexable(self.shape)
 
     def __mul__(self, other: "DiscreteHilbert"):
         if type(self) == type(other):

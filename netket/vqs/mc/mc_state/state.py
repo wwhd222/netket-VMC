@@ -32,7 +32,6 @@ from netket.operator import AbstractOperator, Squared
 from netket.sampler import Sampler, SamplerState
 from netket.utils import (
     maybe_wrap_module,
-    mpi,
     wrap_afun,
     wrap_to_support_scalar,
 )
@@ -40,7 +39,7 @@ from netket.utils.types import PyTree, SeedT, NNInitFunc
 from netket.optimizer import LinearOperator
 from netket.optimizer.qgt import QGTAuto
 
-from netket.jax.sharding import extract_replicated
+from netket.jax import sharding
 
 from netket.vqs.base import VariationalState, expect, expect_and_grad, expect_and_forces
 from netket.vqs.mc import get_local_kernel, get_local_kernel_arguments
@@ -53,14 +52,14 @@ def compute_chain_length(n_chains, n_samples):
     chain_length = int(np.ceil(n_samples / n_chains))
 
     n_samples_new = chain_length * n_chains
-    n_samples_per_rank_new = n_samples_new // mpi.n_nodes
+    n_samples_per_rank_new = n_samples_new // sharding.device_count()
 
     if n_samples_new != n_samples:
-        n_samples_per_rank = n_samples // mpi.n_nodes
+        n_samples_per_rank = n_samples // sharding.device_count()
         warnings.warn(
-            f"n_samples={n_samples} ({n_samples_per_rank} per MPI rank) does not "
-            f"divide n_chains={n_chains}, increased to {n_samples_new} "
-            f"({n_samples_per_rank_new} per MPI rank)",
+            f"n_samples={n_samples} ({n_samples_per_rank} per device/MPI rank) "
+            f"does not divide n_chains={n_chains}, increased to {n_samples_new} "
+            f"({n_samples_per_rank_new} per device/MPI rank)",
             UserWarning,
             stacklevel=3,
         )
@@ -69,7 +68,7 @@ def compute_chain_length(n_chains, n_samples):
 
 
 def check_chunk_size(n_samples, chunk_size):
-    n_samples_per_rank = n_samples // mpi.n_nodes
+    n_samples_per_rank = n_samples // sharding.device_count()
 
     if chunk_size is not None:
         if chunk_size < n_samples_per_rank and n_samples_per_rank % chunk_size != 0:
@@ -146,7 +145,6 @@ class MCState(VariationalState):
         variables: Optional[PyTree] = None,
         init_fun: Optional[NNInitFunc] = None,
         apply_fun: Optional[Callable] = None,
-        sample_fun: Optional[Callable] = None,
         seed: Optional[SeedT] = None,
         sampler_seed: Optional[SeedT] = None,
         mutable: CollectionFilter = False,
@@ -176,7 +174,6 @@ class MCState(VariationalState):
             variables: Optional initial value for the variables (parameters and model state) of the model.
             apply_fun: Function of the signature f(model, variables, σ) that should evaluate the model. Defaults to
                 `model.apply(variables, σ)`. specify only if your network has a non-standard apply method.
-            sample_fun: Optional function used to sample the state, if it is not the same as `apply_fun`.
             training_kwargs: a dict containing the optional keyword arguments to be passed to the apply_fun during training.
                 Useful for example when you have a batchnorm layer that constructs the average/mean only during training.
             chunk_size: (Defaults to `None`) If specified, calculations are split into chunks where the neural network
@@ -218,10 +215,7 @@ class MCState(VariationalState):
             self._model = wrap_afun(apply_fun)
 
         else:
-            raise ValueError(
-                "Must either pass the model or apply_fun, otherwise how do you think we"
-                "gonna evaluate the model?"
-            )
+            raise ValueError("Must either pass the model or apply_fun.")
 
         # default argument for n_samples/n_samples_per_rank
         if n_samples is None and n_samples_per_rank is None:
@@ -233,11 +227,6 @@ class MCState(VariationalState):
                 "Only one argument between `n_samples` and `n_samples_per_rank`"
                 "can be specified at the same time."
             )
-
-        if sample_fun is not None:
-            self._sample_fun = sample_fun
-        else:
-            self._sample_fun = self._apply_fun
 
         self.mutable = mutable
         self.training_kwargs = flax.core.freeze(training_kwargs)
@@ -341,12 +330,13 @@ class MCState(VariationalState):
 
     @property
     def n_samples_per_rank(self) -> int:
-        """The number of samples generated on one MPI rank at every sampling step."""
+        """The number of samples generated on every jax device or MPI rank
+        at every sampling step."""
         return self.chain_length * self.sampler.n_chains_per_rank
 
     @n_samples_per_rank.setter
     def n_samples_per_rank(self, n_samples_per_rank: int):
-        self.n_samples = n_samples_per_rank * mpi.n_nodes
+        self.n_samples = n_samples_per_rank * sharding.device_count()
 
     @property
     def chain_length(self) -> int:
@@ -472,7 +462,9 @@ class MCState(VariationalState):
         if n_samples is None and chain_length is None:
             chain_length = self.chain_length
         else:
-            if chain_length is None:
+            if chain_length is not None and n_samples is not None:
+                raise ValueError("Cannot specify both `chain_length` and `n_samples`.")
+            elif chain_length is None:
                 chain_length = compute_chain_length(self.sampler.n_chains, n_samples)
 
             if self.chunk_size is not None:
@@ -748,7 +740,9 @@ def local_estimators(
 # serialization
 def serialize_MCState(vstate):
     state_dict = {
-        "variables": serialization.to_state_dict(extract_replicated(vstate.variables)),
+        "variables": serialization.to_state_dict(
+            sharding.extract_replicated(vstate.variables)
+        ),
         "sampler_state": serialization.to_state_dict(vstate._sampler_state_previous),
         "n_samples": vstate.n_samples,
         "n_discard_per_chain": vstate.n_discard_per_chain,

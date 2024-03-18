@@ -3,7 +3,52 @@
 
 # Change Log
 
-## NetKet 3.11 (⚙️ In development)
+## NetKet 3.12 (⚙️ In development)
+
+### New Features
+* Discrete Hilbert spaces now use a special {class}`nk.utils.StaticRange` object to store the local values that label the local degree of freedom. This special object is jax friendly and can be converted to arrays, and allows for easy conversion from the local degrees of freedom to integers that can be used to index into arrays, and back. While those objects are not really used internally yet, in the future they will be used to simplify the implementations of operators and other objects [#1732](https://github.com/netket/netket/issues/1732).
+
+
+### Breaking Changes
+* The `out` keyword of Discrete Hilbert indexing methods (`all_states`, `numbers_to_states` and `states_to_numbers`) deprecated in the last release has been removed completely [#1722](https://github.com/netket/netket/issues/1722).
+* The Homogeneous Hilbert spaces now must store the list of valid local values for the states with a {class}`nk.utils.StaticRange` objects instead of list of floats. The constructors have been updated accordingly. {class}`~nk.utils.StaticRange` is a range-like object that is jax-compatible and from now on should be used to index into local hilbert spaces [#1732](https://github.com/netket/netket/issues/1732).
+
+### Deprecations
+
+### Improvements
+* Rewrite the code for generating random states of `netket.hilbert.Fock` and `netket.hilbert.Spin` in Jax and jit the `init` and `reset` functions of `netket.sampler.MetropolisSampler` for better performance and improved compatibility with sharding [#1721](https://github.com/netket/netket/pull/1721).
+
+* Rewrite `netket.hilbert.index` used by `HomogeneousHilbert` (including `Spin` and `Fock`) so that larger spaces with a sum constraint can be indexed. This can be useful for `netket.sampler.Exactsampler`, `netket.vqs.FullSumState` as well as for ED calculations [#1720](https://github.com/netket/netket/pull/1720).
+
+### Internal changes
+
+
+### Bug Fixes
+* Fixes a bug where the conjugate of a fermionic operator was the conjugate-transpose, and the hermitian transpose `.H` was the identity [#1743](https://github.com/netket/netket/pull/1743).
+* Fixed a bug when converting jax operators to qutip format.
+
+
+## NetKet 3.11.2 (27 february 2024)
+
+Bugfix release to solve the following issues:
+* Fix error thrown in repr method of error thrown in TDVP integrators. 
+* Fix repr error of {class}`nk.sampler.rules.MultipleRules` [#1729](https://github.com/netket/netket/pull/1729).
+* Solve an issue with RK Integrators that could not be initialised with integer `t0` initial time if `dt` was a float, as well as a wrong `repr` method leading to uncomprehensible stacktraces [#1736](https://github.com/netket/netket/pull/1736).
+
+
+## NetKet 3.11.1 (19 february 2024)
+
+Bugfix release to solve two issues:
+
+* Fix `reset_chains=True` does not work in `NETKET_EXPERIMENTAL_SHARDING` mode [#1727](https://github.com/netket/netket/pull/1727).
+* Fix unsolvable deprecation warning when using `DoubledHilbert` [#1728](https://github.com/netket/netket/pull/1728).
+
+
+## NetKet 3.11 (~💘 16 february 2024)
+
+This release supports Python 3.12 through the latest release of Numba, introduces several new jax-compatible operators and adds a new experimental way to distribute calculations among multiple GPUs without using MPI.
+
+We have a few breaking changes as well: deprecations that were issued more than 18 months ago have now been finalized, most notable the `dtype` argument to several models and layers, some keywords to GCNN and setting the number of chains of exact samplers.
 
 ### New Features
 
@@ -20,16 +65,19 @@
 * Finalize deprecations of some old methods in `nk.sampler` namespace (see original commit [1f77ad8267e16fe8b2b2641d1d48a0e7ae94832e](https://github.com/netket/netket/commit/1f77ad8267e16fe8b2b2641d1d48a0e7ae94832e))
 * Finalize deprecations of 2D input to DenseSymm layers, which now turn into error and `extra_bias` option of Equivariant Networks/GCNNs (see original commit [c61ea542e9d0f3e899d87a7471dea96d4f6b152d](https://github.com/netket/netket/commit/c61ea542e9d0f3e899d87a7471dea96d4f6b152d))
 * Finalize deprecations of very old input/properties to Lattices [0f6f520da9cb6afcd2361dd6fd029e7ad6a2693e](https://github.com/netket/netket/commit/0f6f520da9cb6afcd2361dd6fd029e7ad6a2693e))
+* Finalie the deprecation for `dtype=` attribute of several modules in `nk.nn` and `nk.models`, which has been printing an error since April 2022. You should update usages of `dtype=` to `param_dtype=` [#1724](https://github.com/netket/netket/issues/1724)
 
 
 ### Deprecations
 
 * `MetropolisSampler.n_sweeps` has been renamed to {attr}`~netket.sampler.MetropolisSampler.MetropolisSampler.sweep_size` for clarity. Using `n_sweeps` when constructing the sampler now throws a deprecation warning; `sweep_size` should be used instead going forward [#1657](https://github.com/netket/netket/issues/1657).
 * Samplers and metropolis rules defined as {func}`netket.utils.struct.dataclass` are deprecated because the base class is now a {class}`netket.utils.struct.Pytree`. The only change needed is to remove the dataclass decorator and define a standard init method [#1653](https://github.com/netket/netket/issues/1653).
+* The `out` keyword of Discrete Hilbert indexing methods (`all_states`, `numbers_to_states` and `states_to_numbers`) is deprecated and will be removed in the next release. Plan ahead and remove usages to avoid breaking your code 3 months from now [#1725](https://github.com/netket/netket/issues/1725)!
 
 ### Internal changes
 * A new class {class}`netket.utils.struct.Pytree`, can be used to create Pytrees for which inheritance autoamtically works and for which it is possible to define `__init__`. Several structures such as samplers and rules have been transitioned to this new interface instead of old style `@struct.dataclass` [#1653](https://github.com/netket/netket/issues/1653).
 * The {class}`~netket.experimental.operator.FermionOperator2nd` and related classes now store the constant diagonal shift as another term instead of a completely special cased scalar value. The same operators now also respect the `cutoff` keyword argument more strictly [#1686](https://github.com/netket/netket/issues/1686).
+* Dtypes of the matrix elements of operators are now handled more correctly, and fewer warnings are raised when running NetKet in X32 mode. Moreover, operators like Ising now default to floating point dtype even if the coefficients are integers [#1697](https://github.com/netket/netket/issues/1697).
 
 ### Bug Fixes
 * Support multiplication of Discrete Operators by Sparse arrays [#1661](https://github.com/netket/netket/issues/1661).

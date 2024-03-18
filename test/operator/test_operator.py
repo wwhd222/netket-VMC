@@ -39,7 +39,7 @@ mszsz = np.asarray([[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
 edges = [[i, i + 1] for i in range(N - 1)] + [[N - 1, 0]]
 
 g = nk.graph.Graph(edges=edges)
-hi = nk.hilbert.CustomHilbert(local_states=[-1, 1], N=g.n_nodes)
+hi = nk.hilbert.CustomHilbert(local_states=nk.utils.StaticRange(-1, 2, 2), N=g.n_nodes)
 operators["Graph Hamiltonian"] = nk.operator.GraphOperator(
     hi, g, site_ops=[sigmax], bond_ops=[mszsz]
 )
@@ -56,7 +56,7 @@ operators["Graph Hamiltonian (on subspace)"] = nk.operator.GraphOperator(
 # Graph Hamiltonian with colored edges
 edges_c = [(i, j, i % 2) for i, j in edges]
 g = nk.graph.Graph(edges=edges_c)
-hi = nk.hilbert.CustomHilbert(local_states=[-1, 1], N=g.n_nodes)
+hi = nk.hilbert.CustomHilbert(local_states=nk.utils.StaticRange(-1, 2, 2), N=g.n_nodes)
 operators["Graph Hamiltonian (colored edges)"] = nk.operator.GraphOperator(
     hi,
     g,
@@ -75,7 +75,7 @@ sx = [[0, 1], [1, 0]]
 sy = [[0, -1.0j], [1.0j, 0]]
 sz = [[1, 0], [0, -1]]
 g = nk.graph.Graph(edges=[[i, i + 1] for i in range(20)])
-hi = nk.hilbert.CustomHilbert(local_states=[-1, 1], N=g.n_nodes)
+hi = nk.hilbert.CustomHilbert(local_states=nk.utils.StaticRange(-1, 2, 2), N=g.n_nodes)
 
 for name, LocalOp_impl in [
     ("numba", nk.operator.LocalOperator),
@@ -96,16 +96,18 @@ for name, LocalOp_impl in [
     operators[f"Custom Hamiltonian Prod ({name})"] = sx_hat * 1.5 + (2.0 * sy_hat)
 
 operators["Pauli Hamiltonian (XX)"] = nk.operator.PauliStrings(["XX"], [0.1])
+operators["Pauli Hamiltonian (YY)"] = nk.operator.PauliStrings(["YY"], [0.1])
 operators["Pauli Hamiltonian (XX+YZ+IZ)"] = nk.operator.PauliStrings(
     ["XX", "YZ", "IZ"], [0.1, 0.2, -1.4]
 )
+operators["Pauli Hamiltonian Jax (YY)"] = nk.operator.PauliStringsJax(["YY"], [0.1])
 operators["Pauli Hamiltonian Jax (_mode=index)"] = nk.operator.PauliStringsJax(
     ["XX", "YZ", "IZ"], [0.1, 0.2, -1.4], _mode="index"
 )
-
 operators["Pauli Hamiltonian Jax (_mode=mask)"] = nk.operator.PauliStringsJax(
     ["XX", "YZ", "IZ"], [0.1, 0.2, -1.4], _mode="mask"
 )
+
 hi = nkx.hilbert.SpinOrbitalFermions(5)
 operators["FermionOperator2nd"] = nkx.operator.FermionOperator2nd(
     hi,
@@ -303,6 +305,15 @@ def test_to_local_operator(op):
     op_l = op.to_local_operator()
     assert isinstance(op_l, nk.operator._local_operator.LocalOperatorBase)
     np.testing.assert_allclose(op.to_dense(), op_l.to_dense(), atol=1e-13)
+
+
+def test_enforce_float_Ising():
+    g = nk.graph.Hypercube(5, 1)
+    hi = nk.hilbert.Spin(s=1 / 2, N=g.n_nodes)
+    op = nk.operator.Ising(hilbert=hi, graph=g, J=1, h=1)
+    assert np.issubdtype(op.dtype, np.floating)
+    op = nk.operator.IsingJax(hilbert=hi, graph=g, J=1, h=1)
+    assert np.issubdtype(op.dtype, np.floating)
 
 
 def test_enforce_float_BoseHubbard():

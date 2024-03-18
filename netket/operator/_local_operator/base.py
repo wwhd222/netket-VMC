@@ -67,6 +67,8 @@ class LocalOperatorBase(DiscreteOperator):
         acting_on: Union[list[int], list[list[int]]] = [],
         constant: numbers.Number = 0,
         dtype: Optional[DType] = None,
+        *,
+        mel_cutoff: float = 1.0e-10,
     ):
         r"""
         Constructs a new ``LocalOperator`` given a hilbert space and (if
@@ -82,19 +84,22 @@ class LocalOperatorBase(DiscreteOperator):
                 corresponding sites.
            constant: Constant diagonal shift of the operator, equivalent to
                 :math:`+\text{c}\hat{I}`. Default is 0.0.
+           dtype: The datatype to use for the matrix elements. Defaults to double precision if
+                available.
+           mel_cutoff (float): a cutoff to remove small matrix elements (default = 1e-10)
 
         Examples:
            Constructs a ``LocalOperator`` without any operators.
 
-           >>> from netket.hilbert import CustomHilbert
+           >>> from netket.hilbert import Spin
            >>> from netket.operator import LocalOperator
-           >>> hi = CustomHilbert(local_states=[-1, 1])**20
+           >>> hi = Spin(0.5)**20
            >>> empty_hat = LocalOperator(hi)
            >>> print(len(empty_hat.acting_on))
            0
         """
         super().__init__(hilbert)
-        self.mel_cutoff = 1.0e-6
+        self.mel_cutoff = mel_cutoff
         self._initialized = None
         self._is_hermitian = None
 
@@ -281,7 +286,7 @@ class LocalOperatorBase(DiscreteOperator):
                     f"to operator with dtype {self.dtype}"
                 )
 
-            assert other.mel_cutoff == self.mel_cutoff
+            self.mel_cutoff = min(other.mel_cutoff, self.mel_cutoff)
             self._constant += other.constant.item()
             for aon, op in other._operators_dict.items():
                 self._add_operator(aon, op)
@@ -366,6 +371,8 @@ class LocalOperatorBase(DiscreteOperator):
     def _op_imatmul_(self, other: "LocalOperatorBase") -> "LocalOperatorBase":
         if not isinstance(other, LocalOperatorBase):
             return NotImplemented
+
+        self.mel_cutoff = min(other.mel_cutoff, self.mel_cutoff)
 
         # (α + ∑ᵢAᵢ)(β + ∑ᵢBᵢ) =
         # = αβ + α ∑ᵢBᵢ + β ∑ᵢAᵢ + ∑ᵢⱼAᵢBⱼ

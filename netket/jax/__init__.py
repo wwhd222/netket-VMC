@@ -19,6 +19,7 @@ from ._utils_dtype import (
     dtype_complex,
     dtype_real,
     maybe_promote_to_complex,
+    canonicalize_dtypes,
 )
 
 from ._utils_tree import (
@@ -57,6 +58,8 @@ from ._vmap_chunked import apply_chunked, vmap_chunked
 from ._math import logsumexp_cplx, logdet_cmplx
 
 from ._jacobian import jacobian, jacobian_default_mode
+
+from ._sort import sort, searchsorted
 
 # internal sharding utilities
 from . import sharding

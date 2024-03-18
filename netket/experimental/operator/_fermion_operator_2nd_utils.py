@@ -1,9 +1,12 @@
+from typing import Optional
+
 import re
 from collections import defaultdict
 import numpy as np
 from numbers import Number
 import copy
 
+from netket.jax import canonicalize_dtypes
 from netket.utils.types import DType, PyTree
 
 OperatorTuple = tuple[int, int]
@@ -221,13 +224,29 @@ def _herm_conj(
     terms: OperatorTermsList, weights: OperatorWeightsList = 1
 ) -> tuple[OperatorTermsList, OperatorWeightsList]:
     """Returns the hermitian conjugate of the terms and weights."""
-    conj_term = []
-    conj_weight = []
-    # loop over all terms and weights and get the hermitian conjugate
-    for term, weight in zip(terms, weights):
-        conj_term.append([(op, 1 - int(dag)) for (op, dag) in reversed(term)])
-        conj_weight.append(np.conjugate(weight))
+    conj_term = transpose_terms(terms)
+    conj_weight = [np.conjugate(weight) for weight in weights]
     return conj_term, conj_weight
+
+
+def transpose_terms(terms: OperatorTermsList) -> OperatorTermsList:
+    """Returns the transpose of the terms (creation/destruction operators).
+    The transpose is equivalent to the hermitian transpose because they are
+    real.
+    """
+    conj_term = []
+    for term in terms:
+        conj_term.append([(op, 1 - int(dag)) for (op, dag) in reversed(term)])
+    return conj_term
+
+
+def transpose_term(term: OperatorTerm) -> OperatorTerm:
+    """Returns the transpose of a single term (creation/destruction operators).
+    The transpose is equivalent to the hermitian transpose because they are
+    real.
+    """
+    # equivalent to transpose_terms
+    return tuple((op, 1 - int(dag)) for (op, dag) in reversed(term))
 
 
 def _convert_terms_to_spin_blocks(
@@ -263,7 +282,7 @@ def _convert_terms_to_spin_blocks(
 def _canonicalize_input(
     terms: OperatorTermsList,
     weights: OperatorWeightsList,
-    dtype: DType,
+    dtype: Optional[DType],
     cutoff: float,
     constant: Number = 0,
 ) -> tuple[OperatorDict, Number, DType]:
@@ -293,8 +312,8 @@ def _canonicalize_input(
         terms = [()] + list(terms)
         weights = [constant] + weights
 
-    if dtype is None:
-        dtype = np.array(weights).dtype
+    dtype = canonicalize_dtypes(float, *weights, constant, dtype=dtype)
+
     weights = np.array(weights, dtype=dtype).tolist()
 
     if not len(weights) == len(terms):
