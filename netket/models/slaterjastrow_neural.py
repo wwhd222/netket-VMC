@@ -6,14 +6,11 @@ from netket.experimental.hilbert import SpinOrbitalFermions
 from netket.utils.types import DType, Array, NNInitFunc
 from functools import partial
 
-from netket.nn.masked_linear import default_kernel_init
-from netket import jax as nkjax
-
-def complex_normal(key, shape, dtype=jnp.complex64,scale=0.001):
-    """Complex normal initializer."""
+def complex_normal(key, shape, dtype=jnp.complex128, scale=0.01):
+    """Complex normal initializer with scale."""
     real_key, imag_key = jax.random.split(key)
-    real_part = jax.random.normal(real_key, shape)
-    imag_part = jax.random.normal(imag_key, shape)
+    real_part = scale * jax.random.normal(real_key, shape)
+    imag_part = scale * jax.random.normal(imag_key, shape)
     return (real_part + 1j * imag_part).astype(dtype)
 
 class ComplexDense(nn.Module):
@@ -23,7 +20,6 @@ class ComplexDense(nn.Module):
 
     @nn.compact
     def __call__(self, inputs):
-        # Initialize the complex-valued weights
         kernel = self.param('kernel', self.kernel_init, (inputs.shape[-1], self.features), self.dtype)
         return jnp.dot(inputs, kernel)
 
@@ -33,11 +29,12 @@ class SlaterJastrowComplex(nn.Module):
     dtype: DType = jnp.complex128
 
     def setup(self):
-        # Assuming a restricted setting for simplicity
-        self.M = self.param("M",
-                            complex_normal,
-                            (self.hilbert.n_orbitals, self.hilbert.n_fermions_per_spin[0]),
-                            self.dtype)
+        self.M = self.param(
+            "M",
+            complex_normal,  # Use the complex_normal with the scale parameter
+            (self.hilbert.n_orbitals, self.hilbert.n_fermions_per_spin[0]),
+            self.dtype
+        )
         self.orbitals = [self.M for _ in self.hilbert.n_fermions_per_spin]
         self.jastrow_network = ComplexDense(self.hidden_units, kernel_init=complex_normal, dtype=self.dtype)
 
@@ -57,7 +54,6 @@ class SlaterJastrowComplex(nn.Module):
         return log_sd(n)
 
     def log_jastrow(self, n: Array):
-        # Process n through the Jastrow neural network
         return jnp.sum(self.jastrow_network(n))
 
     def __call__(self, n: Array):
@@ -70,5 +66,4 @@ class SlaterJastrowComplex(nn.Module):
         log_sd = self.log_slater_determinant(n)
         log_j = self.log_jastrow(n)
 
-        # Combine the log of the Slater determinant and the Jastrow term
         return log_sd + log_j
