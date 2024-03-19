@@ -6,6 +6,9 @@ from netket.experimental.hilbert import SpinOrbitalFermions
 from netket.utils.types import DType, Array, NNInitFunc
 from functools import partial
 
+from netket.nn.masked_linear import default_kernel_init
+from netket import jax as nkjax
+
 def complex_normal(key, shape, dtype=jnp.complex128, scale=0.01):
     """Complex normal initializer with scale."""
     real_key, imag_key = jax.random.split(key)
