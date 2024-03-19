@@ -9,7 +9,7 @@ from functools import partial
 from netket.nn.masked_linear import default_kernel_init
 from netket import jax as nkjax
 
-def complex_normal(key, shape, dtype=jnp.complex64):
+def complex_normal(key, shape, dtype=jnp.complex64,scale=0.001):
     """Complex normal initializer."""
     real_key, imag_key = jax.random.split(key)
     real_part = jax.random.normal(real_key, shape)
