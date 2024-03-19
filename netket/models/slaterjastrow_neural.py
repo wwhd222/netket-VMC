@@ -4,6 +4,7 @@ import jax.numpy as jnp
 from jax import random
 from netket.experimental.hilbert import SpinOrbitalFermions
 from netket.utils.types import DType, Array, NNInitFunc
+from functools import partial
 
 def complex_normal(key, shape, dtype=jnp.complex64):
     """Complex normal initializer."""
