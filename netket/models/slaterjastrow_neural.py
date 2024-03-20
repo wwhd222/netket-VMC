@@ -9,12 +9,10 @@ from functools import partial
 from netket.nn.masked_linear import default_kernel_init
 from netket import jax as nkjax
 
-def complex_normal(key, shape, dtype=jnp.complex128, scale=0.01):
-    """Complex normal initializer with scale."""
-    real_key, imag_key = jax.random.split(key)
-    real_part = scale * jax.random.normal(real_key, shape)
-    imag_part = scale * jax.random.normal(imag_key, shape)
-    return (real_part + 1j * imag_part).astype(dtype)
+def real_normal(key, shape, dtype=jnp.complex128, scale=0.01):
+    """Real normal initializer with scale, but compatible with complex dtype."""
+    real_part = scale * jax.random.normal(key, shape)
+    return real_part.astype(dtype)  # Convert to complex dtype but with zero imaginary part
 
 class ComplexDense(nn.Module):
     features: int
@@ -34,12 +32,12 @@ class SlaterJastrowComplex(nn.Module):
     def setup(self):
         self.M = self.param(
             "M",
-            complex_normal,  # Use the complex_normal with the scale parameter
+            real_normal,  # Use the real_normal with the scale parameter
             (self.hilbert.n_orbitals, self.hilbert.n_fermions_per_spin[0]),
             self.dtype
         )
         self.orbitals = [self.M for _ in self.hilbert.n_fermions_per_spin]
-        self.jastrow_network = ComplexDense(self.hidden_units, kernel_init=complex_normal, dtype=self.dtype)
+        self.jastrow_network = ComplexDense(self.hidden_units, kernel_init=real_normal, dtype=self.dtype)
 
     def log_slater_determinant(self, n: Array):
         @partial(jnp.vectorize, signature="(n)->()")
@@ -52,6 +50,7 @@ class SlaterJastrowComplex(nn.Module):
                 A_i = self.M[R_i]
                 log_det_sum += nkjax.logdet_cmplx(A_i)
                 i_start += n_fermions_i
+
             return log_det_sum
 
         return log_sd(n)
