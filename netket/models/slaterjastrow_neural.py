@@ -11,7 +11,7 @@ from netket import jax as nkjax
 
 def real_normal(key, shape, dtype=jnp.complex128, scale=0.1):
     """Real normal initializer with scale, but compatible with complex dtype."""
-    real_part = 0.1+scale * jax.random.normal(key, shape)
+    real_part = scale * jax.random.normal(key, shape)
     return real_part.astype(dtype)  # Convert to complex dtype but with zero imaginary part
 
 class ComplexDense(nn.Module):
