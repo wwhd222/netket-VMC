@@ -9,7 +9,7 @@ from functools import partial
 from netket.nn.masked_linear import default_kernel_init
 from netket import jax as nkjax
 
-def real_normal(key, shape, dtype=jnp.complex128, scale=0.1):
+def real_normal(key, shape, dtype=jnp.complex128, scale=0.001):
     """Real normal initializer with scale, but compatible with complex dtype."""
     real_part = scale * jax.random.normal(key, shape)
     return real_part.astype(dtype)  # Convert to complex dtype but with zero imaginary part
