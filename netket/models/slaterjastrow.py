@@ -34,6 +34,7 @@ class slater_jastrow(nn.Module):
     
         # Convert both kernel and x_in to this highest precision data type
         kernel = self.kernel.astype(dtype)
+        kernel=kernel+ kernel.conjugate().T
         n = n.astype(dtype)
 
         y = jnp.einsum("...i,ij,...j", n, kernel, n)
