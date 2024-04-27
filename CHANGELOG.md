@@ -15,12 +15,15 @@
 ### Breaking Changes
 * The `out` keyword of Discrete Hilbert indexing methods (`all_states`, `numbers_to_states` and `states_to_numbers`) deprecated in the last release has been removed completely [#1722](https://github.com/netket/netket/issues/1722).
 * The Homogeneous Hilbert spaces now must store the list of valid local values for the states with a {class}`nk.utils.StaticRange` objects instead of list of floats. The constructors have been updated accordingly. {class}`~nk.utils.StaticRange` is a range-like object that is jax-compatible and from now on should be used to index into local hilbert spaces [#1732](https://github.com/netket/netket/issues/1732).
+* The `numbers_to_states` and `states_to_numbers` methods of {class}`nk.hilbert.DiscreteHilbert` must now be jax jittable. Custom Hilbert spaces using non-jittable functions have to be adapted by including a {func}`{jax.pure_callback}` in the `numbers_to_states`/`states_to_numbers` member functions [#1748](https://github.com/netket/netket/issues/1748).
 
 ### Deprecations
+* The method {func}`netket.nn.states_to_numbers` is now deprecated. Please use {meth}`~DiscreteHilbert.numbers_to_states` directly.
 
 ### Improvements
 * Rewrite the code for generating random states of `netket.hilbert.Fock` and `netket.hilbert.Spin` in Jax and jit the `init` and `reset` functions of `netket.sampler.MetropolisSampler` for better performance and improved compatibility with sharding [#1721](https://github.com/netket/netket/pull/1721).
 * Rewrite `netket.hilbert.index` used by `HomogeneousHilbert` (including `Spin` and `Fock`) so that larger spaces with a sum constraint can be indexed. This can be useful for `netket.sampler.Exactsampler`, `netket.vqs.FullSumState` as well as for ED calculations [#1720](https://github.com/netket/netket/pull/1720).
+* Duplicating a `netket.vqs.MCState` now leads to perfectly deterministic, identical samples between two different copies of the same `MCState` even if the sampler is changed. Previously, duplicating an `MCState` and changing the sampler on two copies of the same state would lead to some completely random seed being used and therefore different samples to be generated. This change is needed to eventually achieve proper checkpointing of our calculations [#177X](https://github.com/netket/netket/pull/177X).
 
 ### Internal changes
 
