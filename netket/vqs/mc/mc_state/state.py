@@ -570,7 +570,7 @@ class MCState(VariationalState):
 
     # override to use chunks
     @timing.timed
-    def expect(self, O: AbstractOperator, use_abs: bool = False) -> Stats:
+    def expect(self, O: AbstractOperator, chunk_size: Optional[int] = None, use_abs: bool = False) -> Stats:
         r"""Estimates the quantum expectation value for a given operator
         :math:`O` or generic observable.
         In the case of a pure state :math:`\psi` and an operator, this is
