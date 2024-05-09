@@ -570,7 +570,7 @@ class MCState(VariationalState):
 
     # override to use chunks
     @timing.timed
-    def expect(self, O: AbstractOperator) -> Stats:
+    def expect(self, O: AbstractOperator, use_abs: bool = False) -> Stats:
         r"""Estimates the quantum expectation value for a given operator
         :math:`O` or generic observable.
         In the case of a pure state :math:`\psi` and an operator, this is
@@ -586,27 +586,9 @@ class MCState(VariationalState):
             An estimation of the quantum expectation value
             :math:`\langle O\rangle`.
         """
-        return expect(self, O, self.chunk_size)
+        return expect(self, O, self.chunk_size, use_abs: bool = False)
 
-    # override to use chunks
-    @timing.timed
-    def expect_abs(self, O: AbstractOperator) -> Stats:
-        r"""Estimates the quantum expectation value for a given operator
-        :math:`O` or generic observable.
-        In the case of a pure state :math:`\psi` and an operator, this is
-        :math:`\langle O\rangle= \langle \Psi|O|\Psi\rangle/\langle\Psi|\Psi\rangle`
-        otherwise for a  mixed state :math:`\rho`, this is
-        :math:`\langle O\rangle= \textrm{Tr}[\rho \hat{O}]/\textrm{Tr}[\rho]`.
-
-        Args:
-            O: the operator or observable for which to compute the expectation
-                value.
-
-        Returns:
-            An estimation of the quantum expectation value
-            :math:`\langle O\rangle`.
-        """
-        return expect(self, O, self.chunk_size)
+    
 
     # override to use chunks
     @timing.timed
