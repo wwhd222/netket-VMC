@@ -118,31 +118,6 @@ def expect(
         args,
     )
 
-@dispatch
-def expect_abs(
-    vstate: MCState, Ô: AbstractOperator, chunk_size: None
-) -> Stats:  # noqa: F811
-    σ, args = get_local_kernel_arguments(vstate, Ô)
-    local_estimator_fun = get_local_kernel(vstate, Ô)
-
-    # Calculate local estimations
-    local_ests = local_estimator_fun(vstate.parameters, vstate.model_state, σ, *args)
-
-    # Take the absolute values of the local estimations
-    abs_local_ests = jnp.abs(local_ests)
-
-    # Calculate mean and variance from the absolute values
-    mean_est = abs_local_ests.mean()
-    variance_est = ((abs_local_ests - mean_est) ** 2).mean()
-
-    # Aggregate data across MPI ranks if necessary
-    mean_est = mpi_statistics(mean_est)
-    variance_est = mpi_statistics(variance_est)
-
-    return Stats(mean=mean_est, error_of_mean=0.0, variance=variance_est)
-
-# Note: mpi_statistics is a placeholder for actual MPI aggregation functions
-# which you might need to define based on your MPI setup or use NetKet's built-in utilities.
 
 
 @partial(jax.jit, static_argnums=(0, 1))
@@ -154,6 +129,7 @@ def _expect(
     model_state: PyTree,
     σ: jnp.ndarray,
     local_value_args: PyTree,
+    use_abs: bool = False  # New parameter to control absolute value computation
 ) -> Stats:
     n_chains = σ.shape[0]
     if σ.ndim >= 3:
@@ -175,6 +151,9 @@ def _expect(
     #    local_value_args,
     #    n_chains=n_chains,
     # )
+    # Apply absolute value if required
+    if use_abs:
+        L_σ = jnp.abs(L_σ)
 
     L_σ = local_value_kernel(logpsi, parameters, σ, local_value_args)
     Ō_stats = mpi_statistics(L_σ.reshape((n_chains, -1)))
