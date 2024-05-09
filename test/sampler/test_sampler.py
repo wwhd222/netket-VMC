@@ -278,22 +278,11 @@ def findrng(rng):
         return rng
 
 
-# Mark tests that we know are failing on correctedness
-def failing_test(sampler):
-    # PT Samplers are experimental and fail the correctness test.
-    if isinstance(sampler, nkx.sampler.MetropolisPtSampler):
-        return True
-    return False
-
-
 @pytest.fixture(
     params=[
         pytest.param(
             sampl,
             id=name,
-            marks=pytest.mark.xfail(reason="MUSTFIX: this sampler is known to fail")
-            if failing_test(sampl)
-            else [],
         )
         for name, sampl in samplers.items()
     ]
@@ -426,6 +415,43 @@ def test_correct_sampling(sampler_c, model_and_weights, set_pdf_power):
         s, pval = combine_pvalues(pvalues, method="fisher")
 
         assert pval > 0.01 or np.max(pvalues) > 0.01
+
+
+@pytest.mark.skipif(
+    not nk.config.netket_experimental_sharding, reason="Only run with sharding"
+)
+@pytest.mark.skipif(jax.device_count() < 2, reason="Only run with >1 device")
+def test_sampling_sharded_not_commuincating(
+    sampler_c, model_and_weights, set_pdf_power
+):
+    sampler = set_pdf_power(sampler_c)
+    hi = sampler.hilbert
+    ma, w = model_and_weights(hi, sampler)
+    sampler_state = sampler.init_state(ma, w, seed=SAMPLER_SEED)
+    samples, sampler_state = sampler.sample(ma, w, state=sampler_state, chain_length=1)
+
+    if isinstance(
+        sampler_state, nk.sampler._metropolis_numpy.MetropolisNumpySamplerState
+    ):
+        pytest.xfail("MetropolisNumpySamplerState is not jit compatible")
+
+    sample_jit = jax.jit(
+        sampler.sample, static_argnums=0, static_argnames="chain_length"
+    )
+    complied = sample_jit.lower(ma, w, state=sampler_state, chain_length=1).compile()
+    txt = complied.as_text()
+    for o in [
+        "all-reduce",
+        "collective-permute",
+        "all-gather",
+        "all-to-all",
+        "reduce-scatter",
+    ]:
+        for l in txt.split("\n"):
+            if "equinox" in l:
+                # allow equinox error_if all-gather
+                continue
+            assert o not in l
 
 
 def test_throwing(model_and_weights):
@@ -577,3 +603,33 @@ def test_multiplerules_pt(model_and_weights):
         chain_length=10,
     )
     assert samples.shape == (sa.n_chains, 10, hi.size)
+
+
+def test_hamiltonian_jax_sampler_isleaf():
+    g = nk.graph.Hypercube(length=4, n_dim=1, pbc=True)
+
+    hi = nk.hilbert.Spin(s=1 / 2, N=g.n_nodes)
+    rule1 = nk.sampler.rules.HamiltonianRule(
+        nk.operator.IsingJax(hilbert=hi, graph=g, h=1.0)
+    )
+    rule2 = nk.sampler.rules.HamiltonianRule(
+        nk.operator.IsingJax(hilbert=hi, graph=g, h=1.0)
+    )
+    leaf1, struct1 = jax.tree_util.tree_flatten(rule1)
+    leaf2, struct2 = jax.tree_util.tree_flatten(rule2)
+
+    # if the structures are identical, the operators must have been unpacked.
+    assert struct1 == struct2
+    assert hash(struct1) == hash(struct2)
+
+    # check contained in leafs (this only works because the arrays are identically the same, but it
+    # is enough for this check):
+    for leaf in jax.tree_util.tree_leaves(rule1.operator):
+        found = False
+        for l in leaf1:
+            if leaf is l:
+                found = True
+                break
+        # If this fails, it is either because the operator is not a leaf ot the rule, or because jax changed
+        # some internals and the flattening does not return identical arrays anymore.
+        assert found
