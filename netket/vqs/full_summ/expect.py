@@ -65,25 +65,25 @@ def expect(vstate: FullSumState, Ô: DiscreteOperator) -> Stats:  # noqa: F811
     return Stats(mean=expval_O, error_of_mean=0.0, variance=variance)
 
 
-@dispatch
-def expect_abs(vstate: FullSumState, Ô: DiscreteOperator) -> Stats:  # noqa: F811
-    _check_hilbert(vstate, Ô)
+# @dispatch
+# def expect_abs(vstate: FullSumState, Ô: DiscreteOperator) -> Stats:  # noqa: F811
+#     _check_hilbert(vstate, Ô)
 
-    O = sparsify(Ô)
-    Ψ = vstate.to_array()
+#     O = sparsify(Ô)
+#     Ψ = vstate.to_array()
 
-    # Perform the matrix-vector multiplication
-    OΨ = O @ Ψ
+#     # Perform the matrix-vector multiplication
+#     OΨ = O @ Ψ
 
-    # Compute the expectation value of the absolute values of the physical quantity
-    abs_OΨ = jnp.abs(OΨ)  # Apply absolute value to each element
-    expval_O = (Ψ.conj() * abs_OΨ).sum()
+#     # Compute the expectation value of the absolute values of the physical quantity
+#     abs_OΨ = jnp.abs(OΨ)  # Apply absolute value to each element
+#     expval_O = (Ψ.conj() * abs_OΨ).sum()
 
-    # Variance calculation needs to be adjusted for absolute values
-    # Here we assume you still want the variance of the original quantity, not the absolute
-    variance = jnp.sum(jnp.abs(abs_OΨ - expval_O * Ψ) ** 2)
+#     # Variance calculation needs to be adjusted for absolute values
+#     # Here we assume you still want the variance of the original quantity, not the absolute
+#     variance = jnp.sum(jnp.abs(abs_OΨ - expval_O * Ψ) ** 2)
 
-    return Stats(mean=expval_O, error_of_mean=0.0, variance=variance)
+#     return Stats(mean=expval_O, error_of_mean=0.0, variance=variance)
 
 
 
