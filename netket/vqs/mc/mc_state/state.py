@@ -586,7 +586,7 @@ class MCState(VariationalState):
             An estimation of the quantum expectation value
             :math:`\langle O\rangle`.
         """
-        return expect(self, O, self.chunk_size, use_abs: bool = False)
+        return expect(self, O, self.chunk_size, use_abs=use_abs)
 
     
 
