@@ -157,11 +157,14 @@ def _expect(
     #    local_value_args,
     #    n_chains=n_chains,
     # )
+    def apply_abs(x):
+        return jnp.abs(x) + 0j
+    
     L_σ = local_value_kernel(logpsi, parameters, σ, local_value_args)
     
     # Apply absolute value if required using jax.lax.cond to avoid boolean conversion errors
     L_σ = jax.lax.cond(use_abs,
-                       lambda x: jnp.abs(x),  # True branch
+                       lambda x: apply_abs(x),  # True branch:maintain complex!!!
                        lambda x: x,          # False branch
                        operand=L_σ)
 
