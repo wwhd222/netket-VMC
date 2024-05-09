@@ -157,11 +157,12 @@ def _expect(
     #    local_value_args,
     #    n_chains=n_chains,
     # )
+    L_σ = local_value_kernel(logpsi, parameters, σ, local_value_args)
     # Apply absolute value if required
     if use_abs:
         L_σ = jnp.abs(L_σ)
 
-    L_σ = local_value_kernel(logpsi, parameters, σ, local_value_args)
+    
     Ō_stats = mpi_statistics(L_σ.reshape((n_chains, -1)))
 
     return Ō_stats
