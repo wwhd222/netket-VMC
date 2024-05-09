@@ -103,11 +103,15 @@ def get_local_kernel(vstate: MCState, Ô: ContinuousOperator):  # noqa: F811
 # a completely arbitrary novel type of operator, this makes it much easier.
 @dispatch
 def expect(
-    vstate: MCState, Ô: AbstractOperator, chunk_size: None
+    vstate: MCState, 
+    Ô: AbstractOperator, 
+    chunk_size: None, 
+    use_abs: bool = False  # Add a new parameter with a default value
 ) -> Stats:  # noqa: F811
     σ, args = get_local_kernel_arguments(vstate, Ô)
     local_estimator_fun = get_local_kernel(vstate, Ô)
 
+    # Pass the new use_abs parameter to the _expect function
     return _expect(
         local_estimator_fun,
         vstate._apply_fun,
@@ -116,7 +120,9 @@ def expect(
         vstate.model_state,
         σ,
         args,
+        use_abs  # Include the use_abs parameter here
     )
+
 
 
 
