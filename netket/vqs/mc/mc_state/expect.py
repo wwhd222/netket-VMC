@@ -118,6 +118,32 @@ def expect(
         args,
     )
 
+@dispatch
+def expect_abs(
+    vstate: MCState, Ô: AbstractOperator, chunk_size: None
+) -> Stats:  # noqa: F811
+    σ, args = get_local_kernel_arguments(vstate, Ô)
+    local_estimator_fun = get_local_kernel(vstate, Ô)
+
+    # Calculate local estimations
+    local_ests = local_estimator_fun(vstate.parameters, vstate.model_state, σ, *args)
+
+    # Take the absolute values of the local estimations
+    abs_local_ests = jnp.abs(local_ests)
+
+    # Calculate mean and variance from the absolute values
+    mean_est = abs_local_ests.mean()
+    variance_est = ((abs_local_ests - mean_est) ** 2).mean()
+
+    # Aggregate data across MPI ranks if necessary
+    mean_est = mpi_statistics(mean_est)
+    variance_est = mpi_statistics(variance_est)
+
+    return Stats(mean=mean_est, error_of_mean=0.0, variance=variance_est)
+
+# Note: mpi_statistics is a placeholder for actual MPI aggregation functions
+# which you might need to define based on your MPI setup or use NetKet's built-in utilities.
+
 
 @partial(jax.jit, static_argnums=(0, 1))
 def _expect(
