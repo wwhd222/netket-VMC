@@ -16,6 +16,6 @@ from .state import FullSumState
 
 from . import expect
 
-from . import expect_abs
+#from . import expect_abs
 
 from .expect import expect_and_grad
