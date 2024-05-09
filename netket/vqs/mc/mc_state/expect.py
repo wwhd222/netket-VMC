@@ -158,9 +158,12 @@ def _expect(
     #    n_chains=n_chains,
     # )
     L_σ = local_value_kernel(logpsi, parameters, σ, local_value_args)
-    # Apply absolute value if required
-    if use_abs:
-        L_σ = jnp.abs(L_σ)
+    
+    # Apply absolute value if required using jax.lax.cond to avoid boolean conversion errors
+    L_σ = jax.lax.cond(use_abs,
+                       lambda x: jnp.abs(x),  # True branch
+                       lambda x: x,          # False branch
+                       operand=L_σ)
 
     
     Ō_stats = mpi_statistics(L_σ.reshape((n_chains, -1)))
