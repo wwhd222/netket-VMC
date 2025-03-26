@@ -13,17 +13,17 @@
 # limitations under the License.
 
 from functools import partial
-from typing import Any, Callable, Optional, Union
+from typing import Any
+from collections.abc import Callable
 from textwrap import dedent
 
 import numpy as np
 
 import jax
 from flax import linen as nn
-from flax import serialization
 from jax import numpy as jnp
 
-from netket.hilbert import AbstractHilbert, ContinuousHilbert
+from netket.hilbert import AbstractHilbert, ContinuousHilbert, SpinOrbitalFermions
 
 from netket.utils import mpi, wrap_afun
 from netket.utils.types import PyTree, DType
@@ -31,14 +31,11 @@ from netket.utils.types import PyTree, DType
 from netket.utils.deprecation import warn_deprecation
 from netket.utils import struct
 
-from netket.utils.config_flags import config
 from netket.jax.sharding import (
-    extract_replicated,
-    gather,
-    distribute_to_devices_along_axis,
     device_count,
-    with_samples_sharding_constraint,
+    shard_along_axis,
 )
+from netket.jax import apply_chunked, dtype_real
 
 from .base import Sampler, SamplerState
 from .rules import MetropolisRule
@@ -52,25 +49,49 @@ class MetropolisSamplerState(SamplerState):
     state of the transition rule.
     """
 
-    σ: jnp.ndarray
+    σ: jnp.ndarray = struct.field(
+        sharded=struct.ShardedFieldSpec(
+            sharded=True, deserialization_function="relaxed-ignore-errors"
+        )
+    )
     """Current batch of configurations in the Markov chain."""
-    rng: jnp.ndarray
+    log_prob: jnp.ndarray = struct.field(sharded=True, serialize=False)
+    """Log probabilities of the current batch of configurations σ in the Markov chain."""
+    rng: jnp.ndarray = struct.field(
+        sharded=struct.ShardedFieldSpec(
+            sharded=True, deserialization_function="relaxed-rng-key"
+        )
+    )
     """State of the random number generator (key, in jax terms)."""
-    rule_state: Optional[Any]
+    rule_state: Any | None
     """Optional state of the transition rule."""
 
     n_steps_proc: int = struct.field(default_factory=lambda: jnp.zeros((), dtype=int))
     """Number of moves performed along the chains in this process since the last reset."""
-    n_accepted_proc: jnp.ndarray
+    n_accepted_proc: jnp.ndarray = struct.field(
+        sharded=struct.ShardedFieldSpec(
+            sharded=True, deserialization_function="relaxed-ignore-errors"
+        )
+    )
     """Number of accepted transitions among the chains in this process since the last reset."""
 
-    def __init__(self, σ: jnp.ndarray, rng: jnp.ndarray, rule_state: Optional[Any]):
+    def __init__(
+        self,
+        σ: jnp.ndarray,
+        rng: jnp.ndarray,
+        rule_state: Any | None,
+        log_prob: jnp.ndarray | None = None,
+    ):
         self.σ = σ
         self.rng = rng
         self.rule_state = rule_state
 
-        self.n_accepted_proc = with_samples_sharding_constraint(
-            jnp.zeros(σ.shape[0], dtype=int)
+        if log_prob is None:
+            log_prob = jnp.full(self.σ.shape[:-1], -jnp.inf, dtype=float)
+        self.log_prob = shard_along_axis(log_prob, axis=0)
+
+        self.n_accepted_proc = shard_along_axis(
+            jnp.zeros(σ.shape[0], dtype=int), axis=0
         )
         self.n_steps_proc = jnp.zeros((), dtype=int)
         super().__init__()
@@ -100,53 +121,23 @@ class MetropolisSamplerState(SamplerState):
         return res
 
     def __repr__(self):
-        if self.n_steps > 0:
-            acc_string = f"# accepted = {self.n_accepted}/{self.n_steps} ({self.acceptance * 100}%), "
-        else:
-            acc_string = ""
+        try:
+            if self.n_steps > 0:
+                acc_string = f"# accepted = {self.n_accepted}/{self.n_steps} ({self.acceptance * 100}%), "
+            else:
+                acc_string = ""
 
-        return f"{type(self).__name__}({acc_string}rng state={self.rng})"
+            return f"{type(self).__name__}({acc_string}rng state={self.rng})"
+        except TypeError:
+            return f"{type(self).__name__}(???, rng state={self.rng})"
 
-
-# serialization when sharded
-def serialize_MetropolisSamplerState_sharding(sampler_state):
-    state_dict = MetropolisSamplerState._to_flax_state_dict(
-        MetropolisSamplerState._pytree__static_fields, sampler_state
-    )
-
-    for prop in ["σ", "n_accepted_proc"]:
-        x = state_dict.get(prop, None)
-        if x is not None and isinstance(x, jax.Array) and len(x.devices()) > 1:
-            state_dict[prop] = gather(x)
-    state_dict = extract_replicated(state_dict)
-    return state_dict
-
-
-def deserialize_MetropolisSamplerState_sharding(sampler_state, state_dict):
-    for prop in ["σ", "n_accepted_proc"]:
-        x = state_dict[prop]
-        if x is not None:
-            state_dict[prop] = distribute_to_devices_along_axis(x)
-
-    return MetropolisSamplerState._from_flax_state_dict(
-        MetropolisSamplerState._pytree__static_fields, sampler_state, state_dict
-    )
-
-
-if config.netket_experimental_sharding:
-    # when running on multiple jax processes the σ and n_accepted_proc are not fully addressable
-    # however, when serializing they need to be so here we register custom handlers which
-    # gather all the data to every process.
-    # when deserializing we distribute the samples again to all availale devices
-    # this way it is enough to serialize on process 0, and we can restart the simulation
-    # also  on a different number of devices, provided the number of samples is still
-    # divisible by the new number of devices
-    serialization.register_serialization_state(
-        MetropolisSamplerState,
-        serialize_MetropolisSamplerState_sharding,
-        deserialize_MetropolisSamplerState_sharding,
-        override=True,
-    )
+    def __process_deserialization_updates__(self, updates):
+        # In netket 3.15 we changed the default dtype of samples
+        # to integer dtypes in most of the time. Without this,
+        # deserialization of old files would be broken.
+        if self.σ.dtype != updates["σ"].dtype:
+            updates["σ"] = updates["σ"].astype(self.σ.dtype)
+        return updates
 
 
 def _assert_good_sample_shape(samples, shape, dtype, obj=""):
@@ -235,6 +226,7 @@ class MetropolisSampler(Sampler):
 
     The dtype of the sampled states can be chosen.
     """
+
     rule: MetropolisRule = None
     """The Metropolis transition rule."""
     sweep_size: int = struct.field(pytree_node=False, default=None)
@@ -242,6 +234,8 @@ class MetropolisSampler(Sampler):
     of sites in the Hilbert space."""
     n_chains: int = struct.field(pytree_node=False)
     """Total number of independent chains across all MPI ranks and/or devices."""
+    chunk_size: int | None = struct.field(pytree_node=False, default=None)
+    """Chunk size for evaluating wave functions."""
     reset_chains: bool = struct.field(pytree_node=False, default=False)
     """If True, resets the chain state when `reset` is called on every new sampling."""
 
@@ -253,10 +247,11 @@ class MetropolisSampler(Sampler):
         n_sweeps: int = None,
         sweep_size: int = None,
         reset_chains: bool = False,
-        n_chains: Optional[int] = None,
-        n_chains_per_rank: Optional[int] = None,
+        n_chains: int | None = None,
+        n_chains_per_rank: int | None = None,
+        chunk_size: int | None = None,
         machine_pow: int = 2,
-        dtype: DType = float,
+        dtype: DType = None,
     ):
         """
         Constructs a Metropolis Sampler.
@@ -271,9 +266,10 @@ class MetropolisSampler(Sampler):
                 `n_chains/mpi.n_nodes` chains. In general, we recommend specifying `n_chains_per_rank`
                 as it is more portable.
             n_chains_per_rank: Number of independent chains on every MPI rank (default = 16).
-                               If netket_experimental_sharding is enabled this is interpreted as the number
-                               of independent chains on every jax device, and the n_chains_per_rank
-                               property of the sampler will return the total number of chains on all devices.
+                                If netket_experimental_sharding is enabled this is interpreted as the number
+                                of independent chains on every jax device, and the n_chains_per_rank
+                                property of the sampler will return the total number of chains on all devices.
+            chunk_size: Chunk size for evaluating the ansatz while sampling. Must divide n_chains_per_rank.
             sweep_size: Number of sweeps for each step along the chain.
                 This is equivalent to subsampling the Markov chain. (Defaults to the number of sites
                 in the Hilbert space.)
@@ -316,6 +312,13 @@ class MetropolisSampler(Sampler):
             device_count(),
             "rank",
         )
+        n_chains_per_rank = n_chains // device_count()
+
+        if chunk_size is not None and n_chains_per_rank % chunk_size != 0:
+            raise ValueError(
+                f"Chunk size must divide number of chains per rank, {n_chains_per_rank}"
+            )
+        self.chunk_size = chunk_size
 
         super().__init__(
             hilbert=hilbert,
@@ -337,9 +340,9 @@ class MetropolisSampler(Sampler):
 
     def sample_next(
         sampler,
-        machine: Union[Callable, nn.Module],
+        machine: Callable | nn.Module,
         parameters: PyTree,
-        state: Optional[SamplerState] = None,
+        state: SamplerState | None = None,
     ) -> tuple[SamplerState, jnp.ndarray]:
         """
         Samples the next state in the Markov chain.
@@ -369,8 +372,17 @@ class MetropolisSampler(Sampler):
         key_state, key_rule = jax.random.split(key)
         rule_state = sampler.rule.init_state(sampler, machine, parameters, key_rule)
         σ = jnp.zeros((sampler.n_batches, sampler.hilbert.size), dtype=sampler.dtype)
-        σ = with_samples_sharding_constraint(σ)
-        state = MetropolisSamplerState(σ=σ, rng=key_state, rule_state=rule_state)
+        σ = shard_along_axis(σ, axis=0)
+
+        output_dtype = jax.eval_shape(machine.apply, parameters, σ).dtype
+        log_prob = jnp.full(
+            (sampler.n_batches,), -jnp.inf, dtype=dtype_real(output_dtype)
+        )
+        log_prob = shard_along_axis(log_prob, axis=0)
+
+        state = MetropolisSamplerState(
+            σ=σ, rng=key_state, rule_state=rule_state, log_prob=log_prob
+        )
         # If we don't reset the chain at every sampling iteration, then reset it
         # now.
         if not sampler.reset_chains:
@@ -382,7 +394,7 @@ class MetropolisSampler(Sampler):
                 sampler.dtype,
                 f"{sampler.rule}.random_state",
             )
-            σ = with_samples_sharding_constraint(σ)
+            σ = shard_along_axis(σ, axis=0)
             state = state.replace(σ=σ, rng=key_state)
         return state
 
@@ -399,14 +411,21 @@ class MetropolisSampler(Sampler):
                 sampler.dtype,
                 f"{sampler.rule}.random_state",
             )
-            σ = with_samples_sharding_constraint(σ)
+            σ = shard_along_axis(σ, axis=0)
         else:
             σ = state.σ
+
+        # Recompute the log_probability of the current samples
+        apply_machine = apply_chunked(
+            machine.apply, in_axes=(None, 0), chunk_size=sampler.chunk_size
+        )
+        log_prob_σ = sampler.machine_pow * apply_machine(parameters, σ).real
 
         rule_state = sampler.rule.reset(sampler, machine, parameters, state)
 
         return state.replace(
             σ=σ,
+            log_prob=log_prob_σ,
             rng=rng,
             rule_state=rule_state,
             n_steps_proc=jnp.zeros_like(state.n_steps_proc),
@@ -420,6 +439,9 @@ class MetropolisSampler(Sampler):
         If you subclass `MetropolisSampler`, you should override this and not `sample_next`
         itself, because `sample_next` contains some common logic.
         """
+        apply_machine = apply_chunked(
+            machine.apply, in_axes=(None, 0), chunk_size=sampler.chunk_size
+        )
 
         def loop_body(i, s):
             # 1 to propagate for next iteration, 1 for uniform rng and n_chains for transition kernel
@@ -434,7 +456,7 @@ class MetropolisSampler(Sampler):
                 sampler.dtype,
                 f"{sampler.rule}.transition",
             )
-            proposal_log_prob = sampler.machine_pow * machine.apply(parameters, σp).real
+            proposal_log_prob = sampler.machine_pow * apply_machine(parameters, σp).real
             _assert_good_log_prob_shape(proposal_log_prob, sampler.n_batches, machine)
 
             uniform = jax.random.uniform(key2, shape=(sampler.n_batches,))
@@ -455,20 +477,21 @@ class MetropolisSampler(Sampler):
 
             return s
 
-        new_rng, rng = jax.random.split(state.rng)
-
         s = {
-            "key": rng,
+            "key": state.rng,
             "σ": state.σ,
-            "log_prob": sampler.machine_pow * machine.apply(parameters, state.σ).real,
+            # Log prob is already computed in reset, so don't recompute it.
+            # "log_prob": sampler.machine_pow * apply_machine(parameters, state.σ).real,
+            "log_prob": state.log_prob,
             # for logging
             "accepted": state.n_accepted_proc,
         }
         s = jax.lax.fori_loop(0, sampler.sweep_size, loop_body, s)
 
         new_state = state.replace(
-            rng=new_rng,
+            rng=s["key"],
             σ=s["σ"],
+            log_prob=s["log_prob"],
             n_accepted_proc=s["accepted"],
             n_steps_proc=state.n_steps_proc + sampler.sweep_size * sampler.n_batches,
         )
@@ -594,6 +617,31 @@ def MetropolisExchange(
     region where :math:`\sum_i s_i = \mathrm{constant}` is needed,
     otherwise the sampling would be strongly not ergodic.
 
+    .. warning::
+
+        If you are working with systems where the number of nodes in the physical lattice
+        does not match the number of degrees of freedom, you must be careful!
+
+        A typical example is a system of Spin-1/2 fermions on a lattice with N sites, where the
+        first N degrees of freedom correspond to the spin down degrees of freedom and the
+        next N degrees of freedom correspond to the spin up degrees of freedom.
+
+        In this case, you tipically want to exchange only degrees of freedom of the same type.
+        A simple way to achieve this is to double the graph:
+
+        .. code-block:: python
+
+            import netket as nk
+            g = nk.graph.Square(5)
+            hi = nk.hilbert.SpinOrbitalFermions(g.n_nodes, s=0.5)
+
+            exchange_graph = nk.graph.disjoint_union(g, g)
+            print("Exchange graph size:", exchange_graph.n_nodes)
+
+            sa = nk.sampler.MetropolisExchange(hi, graph=exchange_graph, d_max=1)
+
+
+
     Args:
         hilbert: The Hilbert space to sample.
         d_max: The maximum graph distance allowed for exchanges.
@@ -617,9 +665,25 @@ def MetropolisExchange(
           >>> # Construct a MetropolisExchange Sampler
           >>> sa = nk.sampler.MetropolisExchange(hi, graph=g)
           >>> print(sa)
-          MetropolisSampler(rule = ExchangeRule(# of clusters: 200), n_chains = 16, sweep_size = 100, reset_chains = False, machine_power = 2, dtype = <class 'float'>)
+          MetropolisSampler(rule = ExchangeRule(# of clusters: 200), n_chains = 16, sweep_size = 100, reset_chains = False, machine_power = 2, dtype = int8)
     """
     from .rules import ExchangeRule
+
+    if isinstance(hilbert, SpinOrbitalFermions):
+        warn = True
+        if graph is not None and graph.n_nodes < hilbert.size:
+            warn = True
+        if mpi.rank == 0 and warn:
+            import warnings
+
+            warnings.warn(
+                "Using MetropolisExchange with SpinOrbitalFermions can yield unintended behavior."
+                "Note that MetropolisExchange only exchanges fermions according to the graph edges "
+                "and might not hop fermions of all the spin sectors (see `nk.samplers.rule.FermionHopRule`). "
+                "We recommend using MetropolisFermionHop.",
+                category=UserWarning,
+                stacklevel=2,
+            )
 
     rule = ExchangeRule(clusters=clusters, graph=graph, d_max=d_max)
     return MetropolisSampler(hilbert, rule, **kwargs)
@@ -640,9 +704,6 @@ def MetropolisHamiltonian(hilbert, hamiltonian, **kwargs) -> MetropolisSampler:
     finite matrix elements.
     Notice that this sampler preserves by construction all the symmetries
     of the Hamiltonian. This is in generally not true for the local samplers instead.
-
-    This sampler only works on the CPU. To use the Hamiltonian sampler with GPUs,
-    you should use :class:`netket.sampler.MetropolisHamiltonianNumpy`
 
     Args:
         hilbert: The Hilbert space to sample.
@@ -669,7 +730,7 @@ def MetropolisHamiltonian(hilbert, hamiltonian, **kwargs) -> MetropolisSampler:
        >>> # Construct a MetropolisHamiltonian Sampler
        >>> sa = nk.sampler.MetropolisHamiltonian(hi, hamiltonian=ha)
        >>> print(sa)
-       MetropolisSampler(rule = HamiltonianRuleNumba(operator=Ising(J=1.0, h=1.0; dim=100)), n_chains = 16, sweep_size = 100, reset_chains = False, machine_power = 2, dtype = <class 'float'>)
+       MetropolisSampler(rule = HamiltonianRuleNumba(operator=Ising(J=1.0, h=1.0; dim=100)), n_chains = 16, sweep_size = 100, reset_chains = False, machine_power = 2, dtype = int8)
     """
     from .rules import HamiltonianRule
 
@@ -735,3 +796,41 @@ def MetropolisAdjustedLangevin(
 
     rule = LangevinRule(dt=dt, chunk_size=chunk_size)
     return MetropolisSampler(hilbert, rule, **kwargs)
+
+
+def MetropolisFermionHop(
+    hilbert,
+    *,
+    clusters=None,
+    graph=None,
+    d_max=1,
+    spin_symmetric=True,
+    dtype=np.int8,
+    **kwargs,
+) -> MetropolisSampler:
+    r"""
+    This sampler moves (or hops) a random particle to a different but random empty mode.
+    It works similar to MetropolisExchange, but only allows exchanges between occupied and unoccupied modes.
+
+    Args:
+        hilbert: The Hilbert space to sample.
+        d_max: The maximum graph distance allowed for exchanges.
+        spin_symmetric: (default True) If True, exchanges are only allowed between modes with the same spin projection.
+        n_chains: The total number of independent Markov chains across all MPI ranks. Either specify this or `n_chains_per_rank`.
+        n_chains_per_rank: Number of independent chains on every MPI rank (default = 16).
+        sweep_size: Number of sweeps for each step along the chain. Defaults to the number of sites in the Hilbert space.
+                This is equivalent to subsampling the Markov chain.
+        reset_chains: If True, resets the chain state when `reset` is called on every new sampling (default = False).
+        machine_pow: The power to which the machine should be exponentiated to generate the pdf (default = 2).
+        dtype: The dtype of the states sampled (default = np.int8).
+    """
+    from .rules import FermionHopRule
+
+    rule = FermionHopRule(
+        hilbert,
+        clusters=clusters,
+        graph=graph,
+        d_max=d_max,
+        spin_symmetric=spin_symmetric,
+    )
+    return MetropolisSampler(hilbert, rule, dtype=dtype, **kwargs)

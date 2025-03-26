@@ -13,12 +13,12 @@
 # limitations under the License.
 
 from functools import partial
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 import warnings
 
 import jax
 from jax import numpy as jnp
-from jax.tree_util import tree_map
 from flax.core.scope import CollectionFilter, DenyList  # noqa: F401
 
 from netket import jax as nkjax
@@ -120,7 +120,7 @@ def forces_expect_hermitian_chunked(
         chunk_size=chunk_size,
     )
 
-    Ō = statistics(O_loc.reshape(σ_shape[:-1]).T)
+    Ō = statistics(O_loc.reshape(σ_shape[:-1]))
 
     O_loc -= Ō.mean
 
@@ -145,4 +145,6 @@ def forces_expect_hermitian_chunked(
         (jnp.conjugate(O_loc) / n_samples),
     )[0]
 
-    return Ō, tree_map(lambda x: mpi.mpi_sum_jax(x)[0], Ō_grad), new_model_state
+    Ō_grad, _ = mpi.mpi_sum_jax(Ō_grad)
+
+    return Ō, Ō_grad, new_model_state

@@ -31,6 +31,8 @@ This part of the API is not public, and can change without notice.
   :nosignatures:
 
   tree_dot
+  tree_norm
+  tree_ax
   tree_axpy
   tree_cast
   tree_conj

@@ -12,21 +12,54 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, Optional
+from collections.abc import Callable
+import functools
+from typing import Any
+import warnings
 
 import jax
 
-from dataclasses import dataclass
-
 from netket.vqs import VariationalState
 from netket.utils.types import Scalar, ScalarOrSchedule
+from netket.utils import struct
 
 from .qgt import QGTAuto
 from .preconditioner import AbstractLinearPreconditioner
 
 
-@dataclass
-class SR(AbstractLinearPreconditioner):
+def check_conflicting_args_in_partial(
+    qgt: functools.partial | Any,
+    conflicting_args: list[str],
+    warning_message: str,
+) -> None:
+    """
+    Check for conflicting arguments in a QGT partial.
+
+    Args:
+        qgt: The partial to perform the check or any other object.
+        conflicting_args: List of argument names to check for conflicts.
+        warning_message: Warning message for the user.
+
+    Raises:
+        UserWarning: If conflicting arguments are found.
+    """
+
+    if not isinstance(qgt, functools.partial):
+        return
+
+    specified_args = set(qgt.keywords.keys())
+    conflicting = set(conflicting_args).intersection(specified_args)
+    if conflicting:
+        warnings.warn(
+            warning_message.format(
+                conflicting, {k: qgt.keywords[k] for k in conflicting}
+            ),
+            UserWarning,
+            stacklevel=3,
+        )
+
+
+class SR(AbstractLinearPreconditioner, mutable=True):
     r"""
     Stochastic Reconfiguration or Natural Gradient preconditioner for the gradient.
 
@@ -63,27 +96,27 @@ class SR(AbstractLinearPreconditioner):
 
     """
 
-    diag_shift: ScalarOrSchedule = 0.01
+    diag_shift: ScalarOrSchedule = struct.field(serialize=False, default=0.01)
     """Diagonal shift added to the S matrix. Can be a Scalar value, an
        `optax <https://optax.readthedocs.io>`_ schedule or a Callable function."""
 
-    diag_scale: Optional[ScalarOrSchedule] = None
+    diag_scale: ScalarOrSchedule | None = struct.field(serialize=False, default=None)
     """Diagonal shift added to the S matrix. Can be a Scalar value, an
        `optax <https://optax.readthedocs.io>`_ schedule or a Callable function."""
 
-    qgt_constructor: Callable = None
+    qgt_constructor: Callable = struct.static_field(default=None)
     """The Quantum Geometric Tensor type or a constructor."""
 
-    qgt_kwargs: dict = None
+    qgt_kwargs: dict = struct.field(serialize=False, default=None)
     """The keyword arguments to be passed to the Geometric Tensor constructor."""
 
     def __init__(
         self,
-        qgt: Optional[Callable] = None,
+        qgt: Callable | None = None,
         solver: Callable = jax.scipy.sparse.linalg.cg,
         *,
         diag_shift: ScalarOrSchedule = 0.01,
-        diag_scale: Optional[ScalarOrSchedule] = None,
+        diag_scale: ScalarOrSchedule | None = None,
         solver_restart: bool = False,
         **kwargs,
     ):
@@ -113,7 +146,7 @@ class SR(AbstractLinearPreconditioner):
             solver_restart: If False uses the last solution of the linear
                 system as a starting point for the solution of the next
                 (default=False).
-            holomorphic: boolean indicating if the ansatz is boolean or not. May
+            holomorphic: boolean indicating if the ansatz is holomorphic or not. May
                 speed up computations for models with complex-valued parameters.
         """
         if qgt is None:
@@ -123,18 +156,28 @@ class SR(AbstractLinearPreconditioner):
         self.qgt_kwargs = kwargs
         self.diag_shift = diag_shift
         self.diag_scale = diag_scale
+
+        check_conflicting_args_in_partial(
+            qgt,
+            ["diag_shift", "diag_scale"],
+            "Constructing the SR object with `SR(qgt= MyQGTType({}))` can lead to unexpected results and has been deprecated, "
+            "because the keyword arguments specified in the QGTType are overwritten by those specified by the SR class and its defaults.\n\n"
+            "To fix this, construct SR as  `SR(qgt=MyQGTType, {})` .\n\n"
+            "In the future, this warning will become an error.",
+        )
+
         super().__init__(solver, solver_restart=solver_restart)
 
-    def lhs_constructor(self, vstate: VariationalState, step: Optional[Scalar] = None):
+    def lhs_constructor(self, vstate: VariationalState, step: Scalar | None = None):
         """
-        This method does things
+        This method constructs the left-hand side (LHS) operator for the linear system.
         """
         diag_shift = self.diag_shift
         if callable(self.diag_shift):
             if step is None:
                 raise TypeError(
                     "If you use a scheduled `diag_shift`, you must call "
-                    "the precoditioner with an extra argument `step`."
+                    "the preconditioner with an extra argument `step`."
                 )
             diag_shift = diag_shift(step)
 
@@ -143,7 +186,7 @@ class SR(AbstractLinearPreconditioner):
             if step is None:
                 raise TypeError(
                     "If you use a scheduled `diag_scale`, you must call "
-                    "the precoditioner with an extra argument `step`."
+                    "the preconditioner with an extra argument `step`."
                 )
             diag_scale = diag_scale(step)
 

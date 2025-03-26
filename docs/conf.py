@@ -12,11 +12,21 @@ sys.path.append(str(pathlib.PosixPath(os.getcwd()) / "sphinx_extensions"))
 # -- Project information -----------------------------------------------------
 
 project = "NetKet"
-copyright = "2019-2021, The Netket authors - All rights reserved"
+copyright = "2019-2024, The Netket authors - All rights reserved"
 
 # The full version, including alpha/beta/rc tags
 release = nk.__version__
 
+
+# -- Readthedocs special settings --------------------------------------------
+# Define the canonical URL if you are using a custom domain on Read the Docs
+html_baseurl = os.environ.get("READTHEDOCS_CANONICAL_URL", "")
+
+# Tell Jinja2 templates the build is running on Read the Docs
+if os.environ.get("READTHEDOCS", "") == "True":
+    if "html_context" not in globals():
+        html_context = {}
+    html_context["READTHEDOCS"] = True
 
 # -- General configuration ---------------------------------------------------
 
@@ -34,12 +44,15 @@ extensions = [
     "sphinx.ext.doctest",
     "sphinx.ext.intersphinx",
     "sphinx.ext.mathjax",
-    "sphinx.ext.viewcode",
+    "sphinx.ext.linkcode",
     "sphinx.ext.autosectionlabel",
     "sphinx.ext.graphviz",
     "custom_inheritance_diagram.inheritance_diagram",  # this is a custom patched version because of bug sphinx#2484
     "flax_module.fmodule",
 ]
+
+# For sphinx.ext.linkcode
+from link_to_source import linkcode_resolve
 
 # inheritance_graph_attrs = dict(rankdir="TB", size='""')
 # graphviz_output_format = 'svg'
@@ -119,7 +132,7 @@ intersphinx_mapping = {
     "scipy": ("https://docs.scipy.org/doc/scipy/", None),
     "jax": ("https://jax.readthedocs.io/en/latest/", None),
     "flax": ("https://flax.readthedocs.io/en/latest/", None),
-    "igraph": ("https://igraph.org/python/api/latest", None),
+    "igraph": ("https://python.igraph.org/en/stable/", None),
     "qutip": ("https://qutip.readthedocs.io/en/latest/", None),
     "pyscf": ("https://pyscf.org/", None),
 }
@@ -147,6 +160,7 @@ html_context = {
     "navbar_fixed_top": True,
     "navbar_link": (f"{main_website_base_url}", True),
     "navbar_class": "navbar",
+    "default_mode": "light",
     "navbar_links": [
         ("Posts", f"{main_website_base_url}/posts/", True),
         (

@@ -94,12 +94,6 @@ Please keep in mind that all options related to experimental or internal functio
     (see [here](https://emcee.readthedocs.io/en/stable/tutorials/autocorr/#autocorr) for a good
     discussion).
 
-* - `NETKET_EXPERIMENTAL_DISABLE_ODE_JIT`
-  - True/**[False]**
-  - yes
-  - Disables the jitting of the whole ode solver, mainly used within TDVP solvers.
-    The jitting is sometimes incompatible with GPU-based calculations, and on large calculations it gives negligible speedups so it might be beneficial to disable it.
-
 * - `NETKET_SPHINX_BUILD`
   - True/**[False]**
   - no
@@ -114,10 +108,5 @@ Please keep in mind that all options related to experimental or internal functio
   - integer
   - no
   - Convenience helper to set the flag `XLA_FLAGS='--xla_force_host_platform_device_count=XX', forcing jax to use multiple threads as separate cpu devices.
-
-* - `NETKET_EXPERIMENTAL_SHARDING_NUMBA_WRAPPER_WARNING`
-  - **[True]**/False
-  - yes
-  - Raise a warning when the highly experimental wrapper for numba operators applied to sharded arrays is used.
 
 `````

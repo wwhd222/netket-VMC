@@ -12,11 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Union, Optional, TYPE_CHECKING
+from typing import Union, TYPE_CHECKING
 
 import numbers
 
-from textwrap import dedent
 
 import numpy as np
 import jax.numpy as jnp
@@ -63,10 +62,10 @@ class LocalOperatorBase(DiscreteOperator):
     def __init__(
         self,
         hilbert: AbstractHilbert,
-        operators: Union[list[Array], Array] = [],
-        acting_on: Union[list[int], list[list[int]]] = [],
+        operators: list[Array] | Array = [],
+        acting_on: list[int] | list[list[int]] = [],
         constant: numbers.Number = 0,
-        dtype: Optional[DType] = None,
+        dtype: DType | None = None,
         *,
         mel_cutoff: float = 1.0e-10,
     ):
@@ -102,17 +101,6 @@ class LocalOperatorBase(DiscreteOperator):
         self.mel_cutoff = mel_cutoff
         self._initialized = None
         self._is_hermitian = None
-
-        if not all(
-            [_is_sorted(hilbert.states_at_index(i)) for i in range(hilbert.size)]
-        ):
-            raise ValueError(
-                dedent(
-                    """LocalOperator needs an hilbert space with sorted state values at
-                every site.
-                """
-                )
-            )
 
         # Canonicalize input. From now on input is guaranteed to be in canonical order
         operators, acting_on, dtype = canonicalize_input(
@@ -219,7 +207,7 @@ class LocalOperatorBase(DiscreteOperator):
             **kwargs,
         )
 
-    def copy(self, *, dtype: Optional[DType] = None, _cls=None):
+    def copy(self, *, dtype: DType | None = None, _cls=None):
         """Returns a copy of the operator, while optionally changing the dtype
         of the operator.
 
@@ -317,7 +305,6 @@ class LocalOperatorBase(DiscreteOperator):
             self._reset_caches()
             self._constant += other
             return self
-
         return NotImplemented
 
     def __truediv__(self, other):

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from functools import partial
 from textwrap import dedent
@@ -90,6 +90,11 @@ def SRt(
             matrix_side
         )  # * shift diagonal regularization
         aus_vector = solver_fn(matrix, dv)
+        # some solvers return a tuple, some others do not.
+        # We check and try to support both
+        if isinstance(aus_vector, tuple):
+            aus_vector, _ = aus_vector
+
         aus_vector = aus_vector.reshape(mpi.n_nodes, -1)
         aus_vector, token = mpi.mpi_scatter_jax(aus_vector, token=token)
     else:
@@ -149,7 +154,7 @@ class VMC_SRt(AbstractVariationalDriver):
         *,
         diag_shift: ScalarOrSchedule,
         linear_solver_fn: Callable[[jax.Array, jax.Array], jax.Array] = linear_solver,
-        jacobian_mode: Optional[str] = None,
+        jacobian_mode: str | None = None,
         variational_state: MCState = None,
     ):
         """
@@ -237,7 +242,7 @@ class VMC_SRt(AbstractVariationalDriver):
         return self._jacobian_mode
 
     @jacobian_mode.setter
-    def jacobian_mode(self, mode: Optional[str]):
+    def jacobian_mode(self, mode: str | None):
         if mode is None:
             mode = nkjax.jacobian_default_mode(
                 self.state._apply_fun,
@@ -255,6 +260,7 @@ class VMC_SRt(AbstractVariationalDriver):
             )
         self._jacobian_mode = mode
 
+    @timing.timed
     def _forward_and_backward(self):
         """
         Performs a number of VMC optimization steps.

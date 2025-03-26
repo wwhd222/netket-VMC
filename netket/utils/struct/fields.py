@@ -24,6 +24,8 @@ from dataclasses import MISSING
 
 import jax
 
+from .pytree_serialization_sharding import ShardedFieldSpec
+
 
 def _cache_name(property_name):
     return "__" + property_name + "_cache"
@@ -51,19 +53,44 @@ jax.tree_util.register_pytree_node(
 )
 
 
-def field(pytree_node=True, serialize=True, cache=False, **kwargs):
+def field(
+    pytree_node: bool = True,
+    serialize: bool | None = None,
+    serialize_name: str | None = None,
+    cache: bool = False,
+    sharded: bool | ShardedFieldSpec = False,
+    **kwargs,
+):
     """Mark a field of a dataclass or PyTree to be:
 
     Args:
         pytree_node: a leaf node in the pytree representation of this dataclass.
             If False this must be hashable
         serialize: If True the node is included in the serialization.
-            In general you should not specify this.
+            In general you should not specify this. (Defaults to value of pytree_node).
+        serialize_name: If specified, it's the name under which this attribute is serialized.
+            This can be used to change the runtime attribute name, but maintain some
+            other name in the serialisation format.
         cache: If True this node is a cache and will be reset every time
             fields are modified.
+        sharded: a boolan or specification object specifying whether this entry is sharded.
+            Defaults to False. If True, a MPI-compatible sharding along axis 0 is assumed.
     """
+    if serialize is None:
+        serialize = pytree_node
+    if sharded is True:
+        sharded = ShardedFieldSpec()
+
+    metadata = {
+        "pytree_node": pytree_node,
+        "serialize": serialize,
+        "cache": cache,
+        "sharded": sharded,
+    }
+    if serialize_name is not None:
+        metadata["serialize_name"] = serialize_name
     return dataclasses.field(
-        metadata={"pytree_node": pytree_node, "serialize": serialize, "cache": cache},
+        metadata=metadata,
         **kwargs,
     )
 

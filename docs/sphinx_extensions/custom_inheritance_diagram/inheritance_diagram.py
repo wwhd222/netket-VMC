@@ -168,8 +168,9 @@ class InheritanceGraph:
             classes, show_builtins, private_bases, parts, aliases, top_classes
         )
         if not self.class_info:
-            msg = "No classes found for inheritance diagram"
-            raise InheritanceException(msg)
+            msg = f"No classes found for inheritance diagram of {class_names}"
+            print(msg)
+            # raise InheritanceException(msg)
 
     def _import_classes(self, class_names: list[str], currmodule: str) -> list[Any]:
         """Import a list of classes."""
@@ -369,9 +370,7 @@ class InheritanceGraph:
                 else:
                     this_node_attrs["style"] = '"dashed"'
 
-            res.append(
-                '  "%s" [%s];\n' % (name, self._format_node_attrs(this_node_attrs))
-            )
+            res.append(f'  "{name}" [{self._format_node_attrs(this_node_attrs)}];\n')
 
             # Write the edges
             for base_name in bases:

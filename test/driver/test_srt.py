@@ -71,6 +71,8 @@ def _setup(*, complex=True, machine=None):
     H = nk.operator.Heisenberg(
         hilbert=hi, graph=lattice, J=[1.0, 0.0], sign_rule=[-1, 1]
     )
+    if nk.config.netket_experimental_sharding:
+        H = H.to_jax_operator()
 
     # Define a variational state
     if machine is None:
@@ -126,7 +128,7 @@ def test_SRt_vs_linear_solver_complexpars():
         np.testing.assert_allclose, vstate_srt.parameters, vstate_sr.parameters
     )
 
-    if mpi.rank == 0:
+    if mpi.rank == 0 and jax.process_count() == 0:
         energy_kernelSR = logger_srt.data["Energy"]["Mean"]
         energy_SR = logger_sr.data["Energy"]["Mean"]
 
@@ -157,7 +159,7 @@ def test_SRt_vs_linear_solver():
         np.testing.assert_allclose, vstate_srt.parameters, vstate_sr.parameters
     )
 
-    if mpi.rank == 0:
+    if mpi.rank == 0 and jax.process_count() == 0:
         energy_kernelSR = logger_srt.data["Energy"]["Mean"]
         energy_SR = logger_sr.data["Energy"]["Mean"]
 
@@ -193,7 +195,7 @@ def test_SRt_real_vs_complex():
         np.testing.assert_allclose, vstate_complex.parameters, vstate_real.parameters
     )
 
-    if mpi.rank == 0:
+    if mpi.rank == 0 and jax.process_count() == 0:
         energy_complex = logger_complex.data["Energy"]["Mean"]
         energy_real = logger_real.data["Energy"]["Mean"]
 
@@ -239,5 +241,20 @@ def test_SRt_schedules():
         opt,
         variational_state=vstate_srt,
         diag_shift=optax.linear_schedule(0.1, 0.001, 100),
+    )
+    gs.run(5)
+
+
+def test_SRt_supports_netket_solvers():
+    """
+    nk.driver.VMC_kernelSR must give **exactly** the same dynamics as nk.driver.VMC with nk.optimizer.SR
+    """
+    H, opt, vstate_srt = _setup()
+    gs = VMC_SRt(
+        H,
+        opt,
+        variational_state=vstate_srt,
+        diag_shift=optax.linear_schedule(0.1, 0.001, 100),
+        linear_solver_fn=nk.optimizer.solver.pinv_smooth,
     )
     gs.run(5)

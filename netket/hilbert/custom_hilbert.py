@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Callable
+from collections.abc import Callable
 
 
 from netket.utils import StaticRange
@@ -21,17 +21,31 @@ from .homogeneous import HomogeneousHilbert
 
 
 class CustomHilbert(HomogeneousHilbert):
-    r"""A custom hilbert space with discrete local quantum numbers."""
+    r"""A custom hilbert space with discrete local quantum numbers.
+
+    .. warning::
+
+        This class is deprecated in version 3.14. Use custom constraints with
+        existing classes instead, or define your own hilbert space class.
+
+        Do contact us on GitHub if you have any questions or need assistance.
+
+    """
 
     def __init__(
         self,
-        local_states: Optional[StaticRange],
+        local_states: StaticRange | None,
         N: int = 1,
-        constraint_fn: Optional[Callable] = None,
+        constraint_fn: Callable | None = None,
     ):
         r"""
         Constructs a new ``CustomHilbert`` given a list of eigenvalues of the states and
         a number of sites, or modes, within this hilbert space.
+
+        .. warning::
+
+            This class is deprecated in version 3.14. Use custom constraints with
+            existing classes instead, or define your own hilbert space class.
 
         Args:
             local_states: :class:`~netket.utils.StaticRange` object describing the
@@ -54,7 +68,7 @@ class CustomHilbert(HomogeneousHilbert):
             >>> import netket as nk
             >>> n_max = 10
             >>> nk.utils.StaticRange(start=0, step=1, length=n_max)
-            StaticRange(start=0, step=1, length=10, dtype=int64)
+            StaticRange(start=0, step=1, length=10, dtype=int8)
 
         and the range of a Spin-1/2 Hilbert space is constructed as:
 
@@ -63,7 +77,7 @@ class CustomHilbert(HomogeneousHilbert):
             >>> import netket as nk
             >>> n_max = 10
             >>> nk.utils.StaticRange(start=-1, step=2, length=2)
-            StaticRange(start=-1, step=2, length=2, dtype=int64)
+            StaticRange(start=-1, step=2, length=2, dtype=int8)
 
 
         Examples:
@@ -76,7 +90,7 @@ class CustomHilbert(HomogeneousHilbert):
             >>> print(hi.size)
             100
         """
-        super().__init__(local_states, N, constraint_fn)
+        super().__init__(local_states, N, constraint_fn=constraint_fn)
 
     def _mul_sametype_(self, other):
         assert type(self) == type(other)

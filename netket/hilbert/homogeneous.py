@@ -12,23 +12,67 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Callable
+from collections.abc import Callable
 
 import numpy as np
 
+import jax
 import jax.numpy as jnp
 
 from equinox import error_if
 
-from netket.utils import StaticRange
+from netket.errors import InvalidConstraintInterface, UnhashableConstraintError
+from netket.jax import sharding
+from netket.utils import StaticRange, warn_deprecation
 from netket.utils.types import Array
 
 from .discrete_hilbert import DiscreteHilbert
+from .constraint import DiscreteHilbertConstraint
 from .index import (
     HilbertIndex,
     UniformTensorProductHilbertIndex,
     optimalConstrainedHilbertindex,
 )
+
+
+def check_and_deprecate_constraint(
+    constraint,
+    constraint_fn,
+):
+    __tracebackhide__ = True
+
+    if constraint is not None and constraint_fn is not None:
+        raise ValueError(
+            "Cannot specify at the same time `constraint` and `constraint_fn`, which"
+            "has been deprecated. Please remove the latter."
+        )
+    elif constraint_fn is not None and constraint is None:
+        constraint = constraint_fn
+        warn_deprecation(
+            "The keyword argument `constraint_fn` was renamed to `constraint` and "
+            "deprecated. Moreover, you can no longer pass a function, but must specify a class "
+            "according to the documentation."
+        )
+
+    if constraint is None:
+        return constraint
+
+    # now
+    if not isinstance(constraint, DiscreteHilbertConstraint):
+        raise InvalidConstraintInterface()
+
+    # Check that the constraint is well behaved and is jax-friendly hashable
+    try:
+        leaves, struct = jax.tree_util.tree_flatten(constraint)
+        if not len(leaves) == 0:
+            raise TypeError
+        hash(constraint)
+        constraint == constraint
+
+    except Exception as err:
+        raise UnhashableConstraintError(constraint) from err
+
+    return constraint
 
 
 class HomogeneousHilbert(DiscreteHilbert):
@@ -56,9 +100,11 @@ class HomogeneousHilbert(DiscreteHilbert):
 
     def __init__(
         self,
-        local_states: Optional[StaticRange],
+        local_states: StaticRange,
         N: int = 1,
-        constraint_fn: Optional[Callable] = None,
+        *,
+        constraint: DiscreteHilbertConstraint | None = None,
+        constraint_fn: Callable | None = None,
     ):
         r"""
         Constructs a new :class:`~netket.hilbert.HomogeneousHilbert` given a list of
@@ -72,29 +118,24 @@ class HomogeneousHilbert(DiscreteHilbert):
                 numbers used to encode the local degree of freedom of this Hilbert
                 Space.
             N: Number of modes in this hilbert space (default 1).
-            constraint_fn: A function specifying constraints on the quantum numbers.
+            constraint: A callable class specifying constraints on the quantum numbers.
                 Given a batch of quantum numbers it should return a vector of bools
-                specifying whether those states are valid or not.
+                specifying whether those states are valid or not. It must be an
+                hashable subclass of :class:`netket.hilbert.constraint.DiscreteHilbertConstraint`.
+
         """
         assert isinstance(N, int)
 
         if not (isinstance(local_states, StaticRange) or local_states is None):
             raise TypeError("local_states must be a StaticRange.")
 
-        self._is_finite = local_states is not None
+        self._local_states = local_states
 
-        if self._is_finite:
-            self._local_states = local_states
-            self._local_size = len(local_states)
-        else:
-            self._local_states = None
-            self._local_size = np.iinfo(np.intp).max
-
-        self._constraint_fn = constraint_fn
+        self._constraint = check_and_deprecate_constraint(constraint, constraint_fn)
 
         self._hilbert_index_ = None
 
-        shape = tuple(self._local_size for _ in range(N))
+        shape = tuple(len(local_states) for _ in range(N))
         super().__init__(shape=shape)
 
     @property
@@ -105,13 +146,13 @@ class HomogeneousHilbert(DiscreteHilbert):
     @property
     def local_size(self) -> int:
         r"""Size of the local degrees of freedom that make the total hilbert space."""
-        return self._local_size
+        return len(self._local_states)
 
     def size_at_index(self, i: int) -> int:
         return self.local_size
 
     @property
-    def local_states(self) -> Optional[list[float]]:
+    def local_states(self) -> list[float] | None:
         r"""A list of discrete local quantum numbers.
         If the local states are infinitely many, None is returned."""
         if self.is_finite:
@@ -120,6 +161,16 @@ class HomogeneousHilbert(DiscreteHilbert):
 
     def states_at_index(self, i: int):
         return self.local_states
+
+    @property
+    def constraint(self) -> DiscreteHilbertConstraint:
+        """
+        The constraint inflicted upon this poor Hilbert space.
+
+        Instead of all possible combinations of local states, only those satisfying
+        the constraint are part of this Hilbert space.
+        """
+        return self._constraint
 
     @property
     def n_states(self) -> int:
@@ -146,12 +197,42 @@ class HomogeneousHilbert(DiscreteHilbert):
         Returns:
             a tensor containing integer indices into the local hilbert
         """
-        return self._local_states.states_to_numbers(x, dtype=np.int32)
+        return self._local_states.states_to_numbers(x)
+
+    def local_indices_to_states(self, x: Array, dtype=None):
+        r"""
+        Converts a tensor of integers to the corresponding local_values in
+        this hilbert space.
+
+        Equivalent to
+
+        .. code::py
+
+            hilbert.local_states[x]
+
+        The input last dimension must match the size of this Hilbert space.
+        This function can be jax-jitted.
+
+        Args:
+            x: a tensor with integer dtype and whose last dimension matches
+                the size of this Hilbert space.
+
+        Returns:
+            a tensor with the same shape as the input, and values corresponding
+            to the local_state indexed by the input tensor `x`.
+
+        """
+        return self._local_states.numbers_to_states(x, dtype=dtype)
 
     @property
     def is_finite(self) -> bool:
         r"""Whether the local hilbert space is finite."""
-        return self._is_finite
+        # De-facto, all Homogeneous Hilbert spaces, as they have internally
+        # a StaticRange, are factually finite. So, even when we say this is
+        # False we are lying because it's technically always Finite...
+        #
+        # Do we still need this flag?
+        return len(self._local_states) < np.iinfo(np.intp).max
 
     @property
     def constrained(self) -> bool:
@@ -165,7 +246,7 @@ class HomogeneousHilbert(DiscreteHilbert):
         Typically, objects defined in the constrained space cannot be
         converted to QuTiP or other formats.
         """
-        return self._constraint_fn is not None
+        return self.constraint is not None
 
     def _numbers_to_states(self, numbers: np.ndarray) -> np.ndarray:
         return self._hilbert_index.numbers_to_states(numbers)
@@ -176,18 +257,27 @@ class HomogeneousHilbert(DiscreteHilbert):
         if self.is_finite:
             start = self._local_states.start
             end = start + self._local_states.step * self._local_states.length
-            states = error_if(
-                states,
-                (states < start).any() | (states >= end).any(),
-                "States outside the range of allowed states.",
-            )
+            if self._local_states.step < 0:
+                start, end = end, start
+                start = start - self._local_states.step
+                end = end - self._local_states.step
+
+            # equinox.error_if is broken under shard_map.
+            # If we are using shard map, we skip this check
+            if sharding.SHARD_MAP_STACK_LEVEL == 0 and jax.device_count() == 1:
+                states = error_if(
+                    states,
+                    (states < start).any() | (states >= end).any(),
+                    "States outside the range of allowed states.",
+                )
 
         if self.constrained:
-            states = error_if(
-                states,
-                ~self._constraint_fn(states).all(),
-                "States do not fulfill constraint.",
-            )
+            if sharding.SHARD_MAP_STACK_LEVEL == 0 and jax.device_count() == 1:
+                states = error_if(
+                    states,
+                    ~self.constraint(states).all(),
+                    "States do not fulfill constraint.",
+                )
 
         return self._hilbert_index.states_to_numbers(states)
 
@@ -218,7 +308,7 @@ class HomogeneousHilbert(DiscreteHilbert):
                 index = UniformTensorProductHilbertIndex(self._local_states, self.size)
             else:
                 index = optimalConstrainedHilbertindex(
-                    self._local_states, self.size, self._constraint_fn
+                    self._local_states, self.size, self.constraint
                 )
             self._hilbert_index_ = index
         return self._hilbert_index_
@@ -234,7 +324,7 @@ class HomogeneousHilbert(DiscreteHilbert):
         constr = f", constrained={self.constrained}" if self.constrained else ""
 
         clsname = type(self).__name__
-        return f"{clsname}(local_size={self._local_size}, N={self.size}{constr})"
+        return f"{clsname}(local_size={len(self._local_states)}, N={self.size}{constr})"
 
     @property
     def _attrs(self):
@@ -243,5 +333,5 @@ class HomogeneousHilbert(DiscreteHilbert):
             self.local_size,
             self._local_states,
             self.constrained,
-            self._constraint_fn,
+            self._constraint,
         )

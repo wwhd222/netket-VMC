@@ -11,13 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from functools import wraps
 
 import jax.numpy as jnp
 
 from netket.utils.dispatch import parametric
+from netket.utils.types import Array, DType
 
 from .abstract_hilbert import AbstractHilbert
 from .discrete_hilbert import DiscreteHilbert
+from .index import is_indexable
 
 
 @parametric
@@ -47,31 +50,45 @@ class DoubledHilbert(DiscreteHilbert):
             6
         """
         self.physical = hilb
-        self._size = 2 * hilb.size
 
         super().__init__(shape=hilb.shape * 2)
 
     @property
+    @wraps(DiscreteHilbert.size)
     def size(self):
-        return self._size
+        return 2 * self.physical.size
 
     @property
+    @wraps(DiscreteHilbert.shape)
     def shape(self):
         return self._shape
 
     @property
+    @wraps(DiscreteHilbert.is_finite)
     def is_finite(self):
         return self.physical.is_finite
 
     @property
+    @wraps(DiscreteHilbert.is_indexable)
+    def is_indexable(self) -> bool:
+        """Whether the space can be indexed with an integer"""
+        n = self.physical.n_states
+        return self.physical.is_indexable and is_indexable([n, n])
+
+    @property
     def local_size(self):
+        """The local size of the Hilbert space, if defined on the Physical
+        Hilbert space.
+        """
         return self.physical.local_size
 
     @property
+    @wraps(DiscreteHilbert.all_states)
     def local_states(self):
         return self.physical.local_states
 
     @property
+    @wraps(DiscreteHilbert.constrained)
     def constrained(self):
         return self.physical.constrained
 
@@ -104,10 +121,18 @@ class DoubledHilbert(DiscreteHilbert):
 
     @property
     def size_physical(self):
+        """
+        The size of the physical Hilbert space. In general
+        this should be half of the size of the doubled Hilbert space.
+        """
         return self.physical.size
 
     @property
     def n_states(self):
+        """
+        The total number of states in the Hilbert space. This should be
+        the square of the number of states in the physical Hilbert space.
+        """
         return self.physical.n_states**2
 
     def _numbers_to_states(self, numbers):
@@ -142,6 +167,9 @@ class DoubledHilbert(DiscreteHilbert):
 
     def states_to_local_indices(self, x):
         return self.physical.states_to_local_indices(x)
+
+    def local_indices_to_states(self, x: Array, dtype: DType = None):
+        return self.physical.local_indices_to_states(x, dtype=dtype)
 
     def __repr__(self):
         return f"DoubledHilbert({self.physical})"

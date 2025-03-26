@@ -12,29 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, Optional, Union
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from functools import partial
 import warnings
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 from tqdm.auto import tqdm
 
 import netket as nk
-from netket import config
 from netket.driver import AbstractVariationalDriver
 from netket.driver.abstract_variational_driver import _to_iterable
-from netket.jax import HashablePartial
 from netket.logging.json_log import JsonLog
 from netket.operator import AbstractOperator
 from netket.utils import mpi, timing
 from netket.utils.dispatch import dispatch
 from netket.utils.types import PyTree
+from netket.utils.deprecation import warn_deprecation
 from netket.vqs import VariationalState
-
-from netket.experimental.dynamics import RKIntegratorConfig
-from netket.experimental.dynamics._rk_solver_structures import (
+from netket.experimental.dynamics import AbstractSolver, Integrator
+from netket.experimental.dynamics._utils import (
     euclidean_norm,
     maximum_norm,
 )
@@ -45,25 +42,19 @@ class TDVPBaseDriver(AbstractVariationalDriver):
     Variational time evolution based on the time-dependent variational principle which,
     when used with Monte Carlo sampling via :class:`netket.vqs.MCState`, is the time-dependent VMC
     (t-VMC) method.
-
-    .. note::
-        This TDVP Driver uses the time-integrators from the `nkx.dynamics` module, which are
-        automatically executed under a `jax.jit` context.
-
-        When running computations on GPU, this can lead to infinite hangs or extremely long
-        compilation times. In those cases, you might try setting the configuration variable
-        :py:`nk.config.netket_experimental_disable_ode_jit = True` to mitigate those issues.
-
     """
 
     def __init__(
         self,
         operator: AbstractOperator,
         variational_state: VariationalState,
-        integrator: RKIntegratorConfig,
+        # TODO: remove default None once `integrator` is removed
+        ode_solver: AbstractSolver = None,
         *,
         t0: float = 0.0,
-        error_norm: Union[str, Callable] = "qgt",
+        # TODO: integrator deprecated in 3.16 (oct/nov 2024)
+        integrator: AbstractSolver = None,
+        error_norm: str | Callable = "qgt",
     ):
         r"""
         Initializes the time evolution driver.
@@ -72,7 +63,7 @@ class TDVPBaseDriver(AbstractVariationalDriver):
             operator: The generator of the dynamics (Hamiltonian for pure states,
                 Lindbladian for density operators).
             variational_state: The variational state.
-            integrator: Configuration of the algorithm used for solving the ODE.
+            ode_solver: Solving algorithm used the ODE.
             t0: Initial time at the start of the time evolution.
             propagation_type: Determines the equation of motion: "real"  for the
                 real-time Schrödinger equation (SE), "imag" for the imaginary-time SE.
@@ -103,15 +94,31 @@ class TDVPBaseDriver(AbstractVariationalDriver):
         self._dw = None  # type: PyTree
         self._last_qgt = None
         self._integrator = None
-        self._integrator_constructor = None
-
-        self._odefun = HashablePartial(odefun_host_callback, self.state, self)
 
         self.error_norm = error_norm
-        self.integrator = integrator
+
+        if integrator is not None:
+            warn_deprecation(
+                "The keyword argument `integrator` has been renamed to `ode_solver` and "
+                "deprecated to improve clarity.\n"
+                "Update the keyword argument in your code to avoid breakage in the future."
+            )
+            if ode_solver is not None:
+                raise ValueError("Cannot specify both `ode_solver` and `integrator`.")
+            ode_solver = integrator
+        if ode_solver is None:
+            raise ValueError("You need to define the `ode_solver` for the TDVP driver.")
+        self.ode_solver = ode_solver
 
         self._stop_count = 0
         self._postfix = {}
+
+    @property
+    def ode_solver(self):
+        """
+        The underlying solver which solves the ODE at each time step.
+        """
+        return self.integrator._solver
 
     @property
     def integrator(self):
@@ -120,20 +127,21 @@ class TDVPBaseDriver(AbstractVariationalDriver):
         """
         return self._integrator
 
-    @integrator.setter
-    def integrator(self, integrator):
+    @ode_solver.setter
+    def ode_solver(self, new_ode_solver):
         if self._integrator is None:
             t0 = self.t0
         else:
             t0 = self.t
 
-        self._integrator_constructor = integrator
-
-        self._integrator = integrator(
-            self._odefun,
+        self._integrator = Integrator(
+            partial(odefun, self.state, self),
+            new_ode_solver,
             t0,
             self.state.parameters,
+            use_adaptive=new_ode_solver.adaptive,
             norm=self.error_norm,
+            parameters=new_ode_solver.integrator_params,
         )
 
     @property
@@ -156,7 +164,7 @@ class TDVPBaseDriver(AbstractVariationalDriver):
         return self._error_norm
 
     @error_norm.setter
-    def error_norm(self, error_norm: Union[str, Callable]):
+    def error_norm(self, error_norm: str | Callable):
         if isinstance(error_norm, Callable):
             self._error_norm = error_norm
         elif error_norm == "euclidean":
@@ -164,18 +172,7 @@ class TDVPBaseDriver(AbstractVariationalDriver):
         elif error_norm == "maximum":
             self._error_norm = maximum_norm
         elif error_norm == "qgt":
-            if config.netket_experimental_disable_ode_jit:
-                self._error_norm = HashablePartial(qgt_norm, self)
-            else:
-                w = self.state.parameters
-                norm_dtype = nk.jax.dtype_real(nk.jax.tree_dot(w, w))
-                # QGT norm is called via host callback since it accesses the driver
-                # TODO: make this also an hashablepartial on self to reduce recompilation
-                self._error_norm = lambda x: jax.pure_callback(
-                    HashablePartial(qgt_norm, self),
-                    jax.ShapeDtypeStruct((), norm_dtype),
-                    x,
-                )
+            self._error_norm = partial(qgt_norm, self)
         else:
             raise ValueError(
                 "error_norm must be a callable or one of 'euclidean', 'qgt', 'maximum',"
@@ -195,7 +192,7 @@ class TDVPBaseDriver(AbstractVariationalDriver):
         for _ in self.iter(T):
             pass
 
-    def iter(self, T: float, *, tstops: Optional[Sequence[float]] = None):
+    def iter(self, T: float, *, tstops: Sequence[float] | None = None):
         """
         Returns a generator which advances the time evolution for an interval
         of length :code:`T`, stopping at :code:`tstops`.
@@ -215,8 +212,8 @@ class TDVPBaseDriver(AbstractVariationalDriver):
     def _iter(
         self,
         T: float,
-        tstops: Optional[Sequence[float]] = None,
-        callback: Optional[Callable] = None,
+        tstops: Sequence[float] | None = None,
+        callback: Callable | None = None,
     ):
         """
         Implementation of :code:`iter`. This method accepts and additional `callback` object, which
@@ -226,7 +223,9 @@ class TDVPBaseDriver(AbstractVariationalDriver):
         if tstops is not None and (
             np.any(np.less(tstops, self.t)) or np.any(np.greater(tstops, t_end))
         ):
-            raise ValueError(f"All tstops must be in range [t, t + T]=[{self.t}, {T}]")
+            raise ValueError(
+                f"All tstops must be in range [t, t + T]=[{self.t}, {t_end}]"
+            )
 
         if tstops is not None and len(tstops) > 0:
             tstops = np.sort(tstops)
@@ -253,11 +252,11 @@ class TDVPBaseDriver(AbstractVariationalDriver):
                 step_accepted = self._integrator.step(max_dt=max_dt)
                 if self._integrator.errors:
                     raise RuntimeError(
-                        f"RK solver: {self._integrator.errors.message()}"
+                        f"ODE integrator: {self._integrator.errors.message()}"
                     )
                 elif self._integrator.warnings:
                     warnings.warn(
-                        f"RK solver: {self._integrator.warnings.message()}",
+                        f"ODE integrator: {self._integrator.warnings.message()}",
                         UserWarning,
                         stacklevel=3,
                     )
@@ -316,13 +315,7 @@ class TDVPBaseDriver(AbstractVariationalDriver):
         elif out is None:
             out = ()
 
-        # Log only non-root nodes
-        if self._is_root:
-            loggers = _to_iterable(out)
-        else:
-            loggers = tuple()
-            show_progress = False
-
+        loggers = _to_iterable(out)
         callbacks = _to_iterable(callback)
         callback_stop = False
 
@@ -330,7 +323,7 @@ class TDVPBaseDriver(AbstractVariationalDriver):
 
         with tqdm(
             total=t_end,
-            disable=not show_progress,
+            disable=not show_progress or not self._is_root,
             unit_scale=True,
             dynamic_ncols=True,
         ) as pbar:
@@ -358,9 +351,8 @@ class TDVPBaseDriver(AbstractVariationalDriver):
 
             with timing.timed_scope(force=timeit) as timer:
                 for step in self._iter(T, tstops=tstops, callback=update_progress_bar):
-                    with timing.timed_scope(name="observables"):
-                        log_data = self.estimate(obs)
-                        self._log_additional_data(log_data, step)
+                    log_data = self.estimate(obs)
+                    self._log_additional_data(log_data, step)
 
                     self._postfix = {"n": self.step_count}
                     # if the cost-function is defined then report it in the progress bar
@@ -401,6 +393,7 @@ class TDVPBaseDriver(AbstractVariationalDriver):
         return loggers
 
     def _log_additional_data(self, log_dict, step):
+        super()._log_additional_data(log_dict, step)
         log_dict["t"] = self.t
 
     @property
@@ -461,7 +454,7 @@ class TDVPBaseDriver(AbstractVariationalDriver):
             t = self.t
         if w is None:
             w = self.state.parameters
-        return self._odefun(t, w)
+        return odefun(self.state, self, t, w)
 
 
 def qgt_norm(driver: TDVPBaseDriver, x: PyTree):
@@ -477,25 +470,3 @@ def qgt_norm(driver: TDVPBaseDriver, x: PyTree):
 def odefun(state, driver, t, w, **kwargs):
     # pylint: disable=unused-argument
     raise NotImplementedError(f"odefun not implemented for {type(state)}")
-
-
-def odefun_host_callback(state, driver, *args, **kwargs):
-    """
-    Calls odefun through a host callback in order to make the rest of the
-    ODE solver jit-able.
-    """
-    if config.netket_experimental_disable_ode_jit:
-        return odefun(state, driver, *args, **kwargs)
-
-    result_shape = jax.tree_util.tree_map(
-        lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype),
-        state.parameters,
-    )
-
-    return jax.pure_callback(
-        lambda args_and_kw: odefun(state, driver, *args_and_kw[0], **args_and_kw[1]),
-        result_shape,
-        # pack args and kwargs together, since host_callback passes a single argument:
-        (args, kwargs),
-    )
-    return odefun(state, driver, *args, **kwargs)

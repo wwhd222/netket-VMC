@@ -16,7 +16,7 @@
 This module implements some common kernels used by MCState and MCMixedState.
 """
 
-from typing import Callable, Optional
+from collections.abc import Callable
 from functools import partial
 
 import jax
@@ -72,6 +72,27 @@ def local_value_kernel_jax(
     return jnp.sum(mel * jnp.exp(logpsi_σp - jnp.expand_dims(logpsi_σ, -1)), axis=-1)
 
 
+def local_value_kernel_jax_conn_chunked(
+    logpsi: Callable,
+    pars: PyTree,
+    σ: Array,
+    O: DiscreteJaxOperator,
+    chunk_size: int,
+):
+    """
+    local_value kernel for MCState for jax-compatible operators
+    """
+    apply_conn = lambda s: logpsi(pars, s)
+    apply_conn = nkjax.apply_chunked(apply_conn, in_axes=0, chunk_size=chunk_size)
+
+    σp, mel = O.get_conn_padded(σ)
+
+    logpsi_σ = apply_conn(σ)
+    logpsi_σp = apply_conn(σp.reshape(-1, σ.shape[-1])).reshape(σp.shape[:-1])
+
+    return jnp.sum(mel * jnp.exp(logpsi_σp - jnp.expand_dims(logpsi_σ, -1)), axis=-1)
+
+
 def local_value_squared_kernel(logpsi: Callable, pars: PyTree, σ: Array, args: PyTree):
     """
     local_value kernel for MCState and Squared (generic) operators
@@ -100,7 +121,7 @@ def local_value_kernel_chunked(
     σ: Array,
     args: PyTree,
     *,
-    chunk_size: Optional[int] = None,
+    chunk_size: int | None = None,
 ):
     """
     local_value kernel for MCState and generic operators
@@ -128,7 +149,7 @@ def local_value_squared_kernel_chunked(
     σ: Array,
     args: PyTree,
     *,
-    chunk_size: Optional[int] = None,
+    chunk_size: int | None = None,
 ):
     """
     local_value kernel for MCState and Squared (generic) operators
@@ -147,7 +168,7 @@ def local_value_op_op_cost_chunked(
     σ: Array,
     args: PyTree,
     *,
-    chunk_size: Optional[int] = None,
+    chunk_size: int | None = None,
 ):
     """
     local_value kernel for MCMixedState and generic operators
@@ -178,15 +199,21 @@ def local_value_kernel_jax_chunked(
     σ: Array,
     O: DiscreteJaxOperator,
     *,
-    chunk_size: Optional[int] = None,
+    chunk_size: int | None = None,
 ):
     """
     local_value kernel for MCState and jaxcoompatible operators
     """
-    local_value_kernel = lambda s: local_value_kernel_jax(logpsi, pars, s, O)
-
-    local_value_chunked = nkjax.apply_chunked(
-        local_value_kernel, in_axes=0, chunk_size=chunk_size
-    )
+    if chunk_size >= O.max_conn_size:
+        local_value_kernel = lambda s: local_value_kernel_jax(logpsi, pars, s, O)
+        local_value_chunked = nkjax.apply_chunked(
+            local_value_kernel,
+            in_axes=0,
+            chunk_size=max(1, chunk_size // O.max_conn_size),
+        )
+    else:
+        local_value_chunked = lambda s: local_value_kernel_jax_conn_chunked(
+            logpsi, pars, s, O, chunk_size
+        )
 
     return local_value_chunked(σ)

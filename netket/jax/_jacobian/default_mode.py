@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, Optional
+from collections.abc import Callable
 from functools import partial
 import warnings
 
@@ -27,14 +27,16 @@ from netket.errors import (
 )
 
 
-@struct.dataclass
-class JacobianMode:
+class JacobianMode(struct.Pytree):
     """
     Jax-compatible string type, used to return static information from a jax-jitted
     function.
     """
 
     name: str = struct.field(pytree_node=False)
+
+    def __init__(self, name: str) -> None:
+        self.name = name
 
     def __str__(self):
         return self.name
@@ -60,10 +62,10 @@ HolomorphicMode = JacobianMode("holomorphic")
 def jacobian_default_mode(
     apply_fun: Callable[[PyTree, Array], Array],
     pars: PyTree,
-    model_state: Optional[PyTree],
+    model_state: PyTree | None,
     samples: Array,
     *,
-    holomorphic: Optional[bool] = None,
+    holomorphic: bool | None = None,
     warn: bool = True,
 ) -> JacobianMode:
     """
@@ -112,6 +114,9 @@ def jacobian_default_mode(
             ## all complex parameters
             mode = HolomorphicMode
     else:
+        if model_state is None:
+            model_state = {}
+
         complex_output = jax.numpy.iscomplexobj(
             jax.eval_shape(
                 apply_fun,

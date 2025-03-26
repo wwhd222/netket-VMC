@@ -1,13 +1,15 @@
 import netket as nk
 import numpy as np
-import netket.experimental as nkx
 import scipy
 from netket.operator import DiscreteJaxOperator
 
 import pytest
 import jax
+import jax.numpy as jnp
 from jax.experimental.sparse import BCOO
-from netket.jax.sharding import with_samples_sharding_constraint
+from netket.jax.sharding import shard_along_axis
+
+from .. import common
 
 operators = {}
 
@@ -16,6 +18,7 @@ g = nk.graph.Hypercube(length=10, n_dim=1, pbc=True)
 hi = nk.hilbert.Spin(s=0.5, N=g.n_nodes)
 operators["Ising 1D"] = nk.operator.Ising(hi, g, h=1.321)
 operators["Ising 1D Jax"] = nk.operator.IsingJax(hi, g, h=1.321)
+
 
 # Heisenberg 1D
 g = nk.graph.Hypercube(length=10, n_dim=1, pbc=True)
@@ -113,27 +116,35 @@ operators["Pauli Hamiltonian Jax (_mode=mask)"] = nk.operator.PauliStringsJax(
     ["XX", "YZ", "IZ"], [0.1, 0.2, -1.4], _mode="mask"
 )
 
-hi = nkx.hilbert.SpinOrbitalFermions(5)
-operators["FermionOperator2nd"] = nkx.operator.FermionOperator2nd(
+hi = nk.hilbert.SpinOrbitalFermions(5)
+operators["FermionOperator2nd"] = nk.operator.FermionOperator2nd(
     hi,
     terms=(((0, 1), (3, 0)), ((3, 1), (0, 0))),
     weights=(0.5 + 0.3j, 0.5 - 0.3j),  # must add h.c.
 )
 
-operators[
-    "FermionOperator2ndJax(_mode=default-scan)"
-] = nkx.operator.FermionOperator2ndJax(
-    hi,
-    terms=(((0, 1), (3, 0)), ((3, 1), (0, 0))),
-    weights=(0.5 + 0.3j, 0.5 - 0.3j),  # must add h.c.
+operators["FermionOperator2ndJax(_mode=default-scan)"] = (
+    nk.operator.FermionOperator2ndJax(
+        hi,
+        terms=(((0, 1), (3, 0)), ((3, 1), (0, 0))),
+        weights=(0.5 + 0.3j, 0.5 - 0.3j),  # must add h.c.
+    )
 )
 
-operators["FermionOperator2ndJax(_mode=mask)"] = nkx.operator.FermionOperator2ndJax(
+operators["FermionOperator2ndJax(_mode=mask)"] = nk.operator.FermionOperator2ndJax(
     hi,
     terms=(((0, 1), (3, 0)), ((3, 1), (0, 0))),
     weights=(0.5 + 0.3j, 0.5 - 0.3j),  # must add h.c.
     _mode="mask",
 )
+
+# Remove non jax operators when sharding is activated
+if nk.config.netket_experimental_sharding:
+    _operators = {}
+    for k, o in operators.items():
+        if isinstance(o, nk.operator.DiscreteJaxOperator):
+            _operators[k] = o
+    operators = _operators
 
 op_special = {}
 for name, op in operators.items():
@@ -155,7 +166,7 @@ for name, op in operators.items():
 
 op_jax_compatible = {}
 for name, op in op_finite_size.items():
-    if hasattr(op, "to_jax_operator"):
+    if hasattr(op, "to_jax_operator") and not isinstance(op, DiscreteJaxOperator):
         op_jax_compatible[name] = op
 
 
@@ -167,6 +178,11 @@ def test_produce_elements_in_hilbert(op, attr):
     rng = nk.jax.PRNGSeq(0)
     hi = op.hilbert
     get_conn_fun = getattr(op, attr)
+
+    if nk.config.netket_experimental_sharding:
+        # TODO: get_conn_fun(rstates[i]) and shard map do not play well
+        # together.
+        pytest.xfail("Broken under sharding")
 
     assert len(hi.local_states) == hi.local_size
     assert hi.size > 0
@@ -185,6 +201,7 @@ def test_produce_elements_in_hilbert(op, attr):
 @pytest.mark.parametrize(
     "op", [pytest.param(op, id=name) for name, op in operators.items()]
 )
+@common.skipif_distributed
 def test_is_hermitian(op):
     rng = nk.jax.PRNGSeq(20)
 
@@ -254,22 +271,6 @@ def test_repr(op):
 
 
 @pytest.mark.parametrize(
-    "op", [pytest.param(op, id=name) for name, op in operators_numba.items()]
-)
-def test_get_conn_numpy_closure(op):
-    hi = op.hilbert
-    closure = op._get_conn_flattened_closure()
-    v = hi.random_state(jax.random.PRNGKey(0), 120)
-    conn = np.empty(v.shape[0], dtype=np.intp)
-
-    vp, mels = closure(np.asarray(v), conn)
-    vp2, mels2 = op.get_conn_flattened(v, conn, pad=False)
-
-    np.testing.assert_equal(vp, vp2)
-    np.testing.assert_equal(mels, mels2)
-
-
-@pytest.mark.parametrize(
     "op", [pytest.param(op, id=name) for name, op in operators.items()]
 )
 @pytest.mark.parametrize(
@@ -303,8 +304,8 @@ def test_get_conn_padded(op, shape, dtype):
     assert mels.dtype == op.dtype
 
     vp_f, mels_f = op.get_conn_padded(v.reshape(-1, hi.size))
-    np.testing.assert_allclose(vp_f, vp.reshape(-1, *vp.shape[-2:]))
-    np.testing.assert_allclose(mels_f, mels.reshape(-1, mels.shape[-1]))
+    common.assert_allclose(vp_f, vp.reshape(-1, *vp.shape[-2:]))
+    common.assert_allclose(mels_f, mels.reshape(-1, mels.shape[-1]))
 
 
 @pytest.mark.parametrize(
@@ -322,7 +323,7 @@ def test_operator_sharded_not_commuincating(op):
 
     hi = op.hilbert
     x = hi.random_state(jax.random.PRNGKey(0), 8 * jax.device_count(), dtype=np.float64)
-    x = with_samples_sharding_constraint(x)
+    x = shard_along_axis(x, axis=0)
 
     gcp_jit = jax.jit(lambda ha, x: ha.get_conn_padded(x))
     compiled = gcp_jit.lower(op, x).compile()
@@ -344,7 +345,7 @@ def test_operator_sharded_not_commuincating(op):
 def test_to_local_operator(op):
     op_l = op.to_local_operator()
     assert isinstance(op_l, nk.operator._local_operator.LocalOperatorBase)
-    np.testing.assert_allclose(op.to_dense(), op_l.to_dense(), atol=1e-13)
+    common.assert_allclose(op.to_dense(), op_l.to_dense(), atol=1e-13)
 
 
 def test_enforce_float_Ising():
@@ -354,6 +355,23 @@ def test_enforce_float_Ising():
     assert np.issubdtype(op.dtype, np.floating)
     op = nk.operator.IsingJax(hilbert=hi, graph=g, J=1, h=1)
     assert np.issubdtype(op.dtype, np.floating)
+
+
+def test_add_Ising_different_graphs():
+    hi = nk.hilbert.Spin(s=0.5, N=3)
+    g = nk.graph.Graph(edges=[[0, 1], [1, 2]], n_nodes=3)
+    h1 = nk.operator.Ising(hi, g, h=1)
+    h2 = nk.operator.Ising(hi, g, h=0.5)
+    g = nk.graph.Graph(edges=[[2, 1], [0, 2]], n_nodes=3)
+    h3 = nk.operator.Ising(hi, g, h=0.5)
+
+    h12 = h1 + h2
+    h13 = h1 + h3
+    assert type(h12) == nk.operator.Ising
+    assert type(h13) == nk.operator.LocalOperator
+    np.testing.assert_allclose(h12.to_dense(), h1.to_dense() + h2.to_dense())
+    np.testing.assert_allclose(h13.to_dense(), h1.to_dense() + h3.to_dense())
+    np.testing.assert_allclose((-h1).to_dense(), -h1.to_dense())
 
 
 def test_enforce_float_BoseHubbard():
@@ -409,6 +427,7 @@ def test_operator_on_subspace():
 @pytest.mark.parametrize(
     "op", [pytest.param(op, id=name) for name, op in op_jax_compatible.items()]
 )
+@common.skipif_sharding
 def test_operator_jax_conversion(op):
     op_jax = op.to_jax_operator()
     op_numba = op_jax.to_numba_operator()
@@ -442,6 +461,10 @@ def test_operator_jax_getconn(op):
     op_jax = op.to_jax_operator()
 
     states = op.hilbert.all_states()
+
+    if nk.config.netket_experimental_sharding:
+        # TODO: shard_map breaks
+        pytest.xfail("Broken under sharding")
 
     @jax.jit
     def _get_conn_padded(op, s):
@@ -536,8 +559,66 @@ def test_matmul_sparse_vector(op):
 
     if isinstance(op, DiscreteJaxOperator):
         v = BCOO.fromdense(v)
+        Ov_sparse = op @ v
     else:
         v = scipy.sparse.csr_array(v)
-    Ov_sparse = op @ v
+        Ov_sparse = (op @ v).todense()
 
-    np.testing.assert_array_equal(Ov_dense, Ov_sparse.todense())
+    np.testing.assert_array_equal(Ov_dense, Ov_sparse)
+
+
+@pytest.mark.parametrize(
+    "op",
+    [
+        pytest.param(op, id=name)
+        for name, op in operators.items()
+        if isinstance(op, DiscreteJaxOperator)
+    ],
+)
+def test_jax_operator_to_jax_operator(op):
+    assert op == op.to_jax_operator()
+
+
+@common.skipif_distributed
+def test_bose_hubbard_precision():
+    # Issue #1994
+    N = 2
+    g = nk.graph.Hypercube(length=2, n_dim=1, pbc=True)
+
+    hi = nk.hilbert.Fock(N=g.n_nodes, n_max=N, n_particles=N)
+    ha = nk.operator.BoseHubbard(hilbert=hi, graph=g, U=1.0, J=1.0, V=0.0)
+    haj = nk.operator.BoseHubbardJax(hilbert=hi, graph=g, U=1.0, J=1.0, V=0.0)
+
+    def gcp(s):
+        xp, mels = ha.get_conn_padded(s)
+        return jnp.asarray(mels).sort(axis=-1)
+
+    def gcpj(s):
+        return haj.get_conn_padded(s)[1].sort(axis=-1)
+
+    s = hi.all_states()
+    assert jax.numpy.all(gcp(s) == gcpj(s))
+
+
+# FIXME: enable Bose Hubbard Complex once fixed
+@pytest.mark.parametrize(
+    "op",
+    [
+        pytest.param(op, id=name)
+        for name, op in op_jax_compatible.items()
+        if not name.startswith("Bose Hubbard Complex")
+    ],
+)
+@common.skipif_sharding
+def test_operator_jax_n_conn(op):
+    """Check that n_conn returns the same result for jax and numba operators"""
+    op_jax = op.to_jax_operator()
+
+    states = op.hilbert.all_states()
+
+    n_conn = op.n_conn(states)
+    n_conn_j = op_jax.n_conn(states)
+
+    assert np.less_equal(n_conn_j, n_conn).all()
+    # FIXME: uncomment once the numba implementation is fixed
+    # np.testing.assert_equal(n_conn_j, n_conn)

@@ -1,15 +1,20 @@
 import dataclasses
-import inspect
 import typing as tp
+from typing import Any
+from collections.abc import Callable
 from abc import ABCMeta
 from copy import copy
 from functools import partial
 from types import MappingProxyType
 
 import jax
+import jax.numpy as jnp
+
+from flax import serialization
 
 from .fields import CachedProperty, _cache_name, _raw_cache_name, Uninitialized
 from netket.utils import config
+from netket.errors import NetKetPyTreeUndeclaredAttributeAssignmentError
 
 P = tp.TypeVar("P", bound="Pytree")
 
@@ -20,6 +25,10 @@ store the topmost non-dataclass class in a mro.
 """
 
 
+def identity(x):
+    return x
+
+
 class PytreeMeta(ABCMeta):
     """
     Metaclass for PyTrees, takes care of initializing and turning
@@ -27,14 +36,28 @@ class PytreeMeta(ABCMeta):
     """
 
     def __call__(cls: type[P], *args: tp.Any, **kwargs: tp.Any) -> P:
+        __tracebackhide__ = True
+
         obj: P = cls.__new__(cls, *args, **kwargs)
+
+        # set things before init
+        vars_dict = vars(obj)
+
+        # Set 'default' values
+        for field in obj._pytree__cachedprop_fields:
+            vars_dict[field] = Uninitialized
+
+        for field, default_fn in cls._pytree__default_setters.items():
+            if field not in vars_dict:
+                vars_dict[field] = default_fn()
+
         obj.__dict__["_pytree__initializing"] = True
         try:
             obj.__init__(*args, **kwargs)
         finally:
             del obj.__dict__["_pytree__initializing"]
 
-        vars_dict = vars(obj)
+        # set things after init
         if obj._pytree__class_dynamic_nodes:
             vars_dict["_pytree__node_fields"] = tuple(
                 sorted(
@@ -45,9 +68,6 @@ class PytreeMeta(ABCMeta):
             )
         else:
             vars_dict["_pytree__node_fields"] = cls._pytree__data_fields
-
-        for field in obj._pytree__cachedprop_fields:
-            vars_dict[field] = Uninitialized
 
         return obj
 
@@ -62,7 +82,8 @@ class Pytree(metaclass=PytreeMeta):
     PyTree.
 
     Static fields must be specified as class attributes, by specifying
-    the :func:`nk.utils.struct.field(pytree_node=False)`.
+    the :func:`netket.utils.struct.field` as
+    :code:`struct.field(pytree_node=False)`.
 
     Example:
         Construct a PyTree with a 'constant' value
@@ -113,42 +134,60 @@ class Pytree(metaclass=PytreeMeta):
 
     _pytree__initializing: bool
     _pytree__class_is_mutable: bool
+    _pytree__fields: dict[str, dataclasses.Field]
     _pytree__static_fields: tuple[str, ...]
     _pytree__node_fields: tuple[str, ...]
     _pytree__setter_descriptors: frozenset[str]
 
     _pytree__cachedprop_fields: tuple[str, ...]
 
-    def __init_subclass__(cls, mutable: bool = False, dynamic_nodes: bool = False):
+    def __init_subclass__(cls, mutable: bool = None, dynamic_nodes: bool = False):
         super().__init_subclass__()
 
         # gather class info
         class_vars = vars(cls)
         setter_descriptors = set()
-        static_fields = _inherited_static_fields(cls)
-
-        # add special static fields
-        static_fields.add("_pytree__node_fields")
+        all_fields, data_fields, static_fields = _inherited_fields(cls)
 
         # new
-        data_fields = _inherited_data_fields(cls)
+        default_setters = _inherited_defaults_setters(cls)  # _pytree__default_setters
         cached_prop_fields = set()
 
+        # Custom information
+        noserialize_fields = _inherited_noserialize_fields(cls)
+        sharded_fields = _inherited_sharded_fields(cls)
+
+        # add special static fields that are in the instance, not in the class
+        static_fields.add("_pytree__node_fields")
+        noserialize_fields.add("_pytree__node_fields")
+
         for field, value in class_vars.items():
-            if isinstance(value, dataclasses.Field) and not value.metadata.get(
-                "pytree_node", True
-            ):
-                static_fields.add(field)
+            if isinstance(value, dataclasses.Field):
+                all_fields[field] = value
+                _is_pytree_node = value.metadata.get("pytree_node", True)
+                if not _is_pytree_node:
+                    static_fields.add(field)
+                elif _is_pytree_node:
+                    data_fields.add(field)
+
+                if not value.metadata.get("serialize", True):
+                    noserialize_fields.add(field)
+                if value.metadata.get("sharded", False):
+                    sharded_fields.add(field)
+
+                # default setters
+                if value.default is not dataclasses.MISSING:
+                    default_setters[field] = partial(identity, value.default)
+                elif value.default_factory is not dataclasses.MISSING:
+                    default_setters[field] = value.default_factory
+
             elif isinstance(value, CachedProperty):
                 cached_prop_fields.add(field)
-            elif isinstance(value, dataclasses.Field) and value.metadata.get(
-                "pytree_node", True
-            ):
-                data_fields.add(field)
 
             # add setter descriptors
             if hasattr(value, "__set__"):
                 setter_descriptors.add(field)
+
         for field in cached_prop_fields:
             # setattr(cls, _cache_name(field), Uninitialized)
             if class_vars[field].pytree_node:
@@ -162,13 +201,33 @@ class Pytree(metaclass=PytreeMeta):
         # If no annotations in this class, skip, otherwise we'd process
         # parent's annotations twice
         if "__annotations__" in cls.__dict__:
-            # fields that are only type annotations, feed them forward
+            # fields that are only type annotations, but do not explicitly declare
+            # a struct.field(), feed them forward and treat as standard fields.
             for field, _ in cls.__annotations__.items():
-                if field not in static_fields and field not in data_fields:
+                if field not in all_fields:
+                    _value = dataclasses.field()
+                    _value.name = field
+                    all_fields[field] = _value
                     data_fields.add(field)
 
+                    # If field is in class_vars, it has a default value declared.
+                    # this can be overridden by subclasses.
+                    if field in class_vars:
+                        # has default value
+                        value = class_vars[field]
+                        default_setters[field] = partial(identity, value)
+
+        # Set mutable to be inherited from parent, or false otherwise
+        if mutable is None:
+            for parent_class in cls.mro():
+                mutable = getattr(parent_class, "_pytree__class_is_mutable", None)
+                if mutable is not None:
+                    break
+        if mutable is None:
+            mutable = False
+
         if mutable and len(cached_prop_fields) != 0:
-            raise ValueError("cannot use cached properties with " "mutable pytrees.")
+            raise ValueError("cannot use cached properties with mutable pytrees.")
 
         if config.netket_sphinx_build:
             for k in static_fields:
@@ -187,14 +246,25 @@ class Pytree(metaclass=PytreeMeta):
         data_fields = tuple(sorted(data_fields))
         cached_prop_fields = tuple(sorted(cached_prop_fields))
         cached_prop_fields = tuple(_cache_name(f) for f in cached_prop_fields)
+        default_setters = MappingProxyType(default_setters)
 
         static_fields = tuple(sorted(static_fields))
+        noserialize_fields = tuple(sorted(noserialize_fields))
+        serialize_rename_fields = tuple(
+            sorted(compute_serialize_rename_fields(all_fields))
+        )
+        sharded_fields = tuple(sorted(sharded_fields))
 
         # init class variables
         cls._pytree__initializing = False
         cls._pytree__class_is_mutable = mutable
+        cls._pytree__fields = all_fields
         cls._pytree__static_fields = static_fields
+        cls._pytree__noserialize_fields = noserialize_fields
+        cls._pytree__serialize_rename_fields = serialize_rename_fields
+        cls._pytree__sharded_fields = sharded_fields
         cls._pytree__setter_descriptors = frozenset(setter_descriptors)
+        cls._pytree__default_setters = default_setters
 
         # new
         cls._pytree__class_dynamic_nodes = dynamic_nodes
@@ -202,40 +272,17 @@ class Pytree(metaclass=PytreeMeta):
         cls._pytree__cachedprop_fields = cached_prop_fields
         cls._pytree__init_fields = init_fields
 
-        # TODO: clean up this in the future once minimal supported version is 0.4.7
-        if (
-            "flatten_func"
-            in inspect.signature(jax.tree_util.register_pytree_with_keys).parameters
-        ):
-            jax.tree_util.register_pytree_with_keys(
-                cls,
-                partial(
-                    cls._pytree__flatten,
-                    with_key_paths=True,
-                ),
-                cls._pytree__unflatten,
-                flatten_func=partial(
-                    cls._pytree__flatten,
-                    with_key_paths=False,
-                ),
-            )
-        else:
-            jax.tree_util.register_pytree_with_keys(
-                cls,
-                partial(
-                    cls._pytree__flatten,
-                    with_key_paths=True,
-                ),
-                cls._pytree__unflatten,
-            )
-
-        # flax serialization support
-        from flax import serialization
+        jax.tree_util.register_pytree_with_keys(
+            cls,
+            partial(cls._pytree__flatten, with_key_paths=True),
+            cls._pytree__unflatten,
+            flatten_func=partial(cls._pytree__flatten, with_key_paths=False),
+        )
 
         serialization.register_serialization_state(
             cls,
-            partial(cls._to_flax_state_dict, cls._pytree__static_fields),
-            partial(cls._from_flax_state_dict, cls._pytree__static_fields),
+            partial(cls._to_flax_state_dict, cls._pytree__noserialize_fields),
+            partial(cls._from_flax_state_dict, cls._pytree__noserialize_fields),
         )
 
     def __pre_init__(self, *args, **kwargs):
@@ -279,13 +326,30 @@ class Pytree(metaclass=PytreeMeta):
     def __post_init__(self):
         pass
 
+    def __process_deserialization_updates__(self, updates):
+        """
+        Internal function used to modify a posteriori how a
+        PyTree is deserialized.
+
+        This is fed a dictionary of {'attribute names':values}
+        that will be used to call `self.replace(**updates)`,
+        and should return a modified dictionary.
+
+        Can be for example used to support backward compatible
+        deserialization.
+        """
+        return updates
+
     @classmethod
     def _pytree__flatten(
         cls,
         pytree: "Pytree",
         *,
         with_key_paths: bool,
-    ) -> tuple[tuple[tp.Any, ...], tp.Mapping[str, tp.Any],]:
+    ) -> tuple[
+        tuple[tp.Any, ...],
+        tp.Mapping[str, tp.Any],
+    ]:
         all_vars = vars(pytree).copy()
         static = {k: all_vars.pop(k) for k in pytree._pytree__static_fields}
 
@@ -320,31 +384,54 @@ class Pytree(metaclass=PytreeMeta):
 
     @classmethod
     def _to_flax_state_dict(
-        cls, static_field_names: tuple[str, ...], pytree: "Pytree"
+        cls, noserialize_field_names: tuple[str, ...], pytree: "Pytree"
     ) -> dict[str, tp.Any]:
-        from flax import serialization
+        from .pytree_serialization_sharding import to_flax_state_dict_sharding
 
         state_dict = {
-            name: serialization.to_state_dict(getattr(pytree, name))
+            name: unwrap_jax_prng_keys(
+                serialization.to_state_dict(getattr(pytree, name))
+            )
             for name in pytree.__dict__
-            if name not in static_field_names
+            if name not in noserialize_field_names
         }
+
+        # Handle sharding
+        for name in cls._pytree__sharded_fields:
+            if name in cls._pytree__noserialize_fields:
+                continue
+            state_dict[name] = to_flax_state_dict_sharding(state_dict[name])
+        # End handle sharding
+
+        # rename fields if we must
+        for name, serialize_name in cls._pytree__serialize_rename_fields:
+            state_dict[serialize_name] = state_dict[name]
+            del state_dict[name]
+        # end renaming
+
         return state_dict
 
     @classmethod
     def _from_flax_state_dict(
         cls,
-        static_field_names: tuple[str, ...],
+        noserialize_field_names: tuple[str, ...],
         pytree: P,
         state: dict[str, tp.Any],
     ) -> P:
         """Restore the state of a data class."""
-        from flax import serialization
-
         state = state.copy()  # copy the state so we can pop the restored fields.
         updates = {}
+
+        # rename fields if we must
+        for name, serialize_name in cls._pytree__serialize_rename_fields:
+            if serialize_name in state:
+                state[name] = state[serialize_name]
+                del state[serialize_name]
+
+        # end renaming
+
         for name in pytree.__dict__:
-            if name in static_field_names:
+            if name in noserialize_field_names:
                 continue
             if name not in state:
                 raise ValueError(
@@ -354,7 +441,40 @@ class Pytree(metaclass=PytreeMeta):
                 )
             value = getattr(pytree, name)
             value_state = state.pop(name)
-            updates[name] = serialization.from_state_dict(value, value_state, name=name)
+            # updates[name] = serialization.from_state_dict(value, value_state, name=name)
+
+            # handle PRNG arrays: if target is a prng key array we unwrap it
+            _pytree_prng_orig_value = dataclasses.MISSING
+            if isinstance(value, jax.Array) and jnp.issubdtype(
+                value.dtype, jax.dtypes.prng_key
+            ):
+                _pytree_prng_orig_value = jax.random.key_impl(value)
+                value = jax.random.key_data(value)
+                # return jax.random.wrap_key_data(source_data, jax.random.key_impl(target_maybe_key))
+                # return jax.random.key_data(maybe_key)
+
+            # Handle sharding
+            # from netket.utils import mpi
+            # import jax
+            if name in cls._pytree__sharded_fields:
+                updates[name] = (
+                    cls._pytree__fields[name]
+                    .metadata["sharded"]
+                    .deserialization_function(value, value_state, name=name)
+                )
+
+            # End handle sharding
+            else:
+                updates[name] = serialization.from_state_dict(
+                    value, value_state, name=name
+                )
+
+            # rewrap prng arrays
+            if _pytree_prng_orig_value is not dataclasses.MISSING:
+                updates[name] = jax.random.wrap_key_data(
+                    updates[name], impl=_pytree_prng_orig_value
+                )
+
         if state:
             names = ",".join(state.keys())
             raise ValueError(
@@ -362,7 +482,10 @@ class Pytree(metaclass=PytreeMeta):
                 f" restoring an instance of {type(pytree).__name__}"
                 f" at path {serialization.current_path()}"
             )
-        return pytree.replace(**updates)
+
+        updates = pytree.__process_deserialization_updates__(updates)
+        new_pytree = pytree.replace(**updates)
+        return new_pytree
 
     def replace(self: P, **kwargs: tp.Any) -> P:
         """
@@ -394,12 +517,14 @@ class Pytree(metaclass=PytreeMeta):
 
         def __setattr__(self: P, field: str, value: tp.Any):
             if self._pytree__initializing:
+                typ = type(self)
                 if self._pytree__class_dynamic_nodes:
                     pass
+                elif isinstance(getattr(typ, field, None), property):
+                    pass
                 elif field not in self._pytree__init_fields:
-                    raise AttributeError(
-                        f"Cannot set field {field} in init that was not described "
-                        "as a class attribute above."
+                    raise NetKetPyTreeUndeclaredAttributeAssignmentError(
+                        self, field, self._pytree__init_fields
                     )
             else:
                 if field in self._pytree__setter_descriptors:
@@ -418,38 +543,68 @@ class Pytree(metaclass=PytreeMeta):
             object.__setattr__(self, field, value)
 
 
-def _inherited_static_fields(cls: type) -> set[str]:
+def _inherited_fields(
+    cls: type,
+) -> tuple[dict[str, dataclasses.Field], set[str], set[str]]:
     """
-    Returns the set of static fields of base classes
-    of the input class
+    Returns the set of all fields (static and data) fields from
+    base classes.
     """
+    fields = {}
+    data_fields = set()
     static_fields = set()
+
     for parent_class in cls.mro():
         if parent_class is not cls and parent_class is not Pytree:
             if issubclass(parent_class, Pytree):
+                fields.update(parent_class._pytree__fields)
+                data_fields.update(parent_class._pytree__data_fields)
                 static_fields.update(parent_class._pytree__static_fields)
             elif dataclasses.is_dataclass(parent_class):
                 for field in dataclasses.fields(parent_class):
-                    if not field.metadata.get("pytree_node", True):
+                    fields[field.name] = field
+
+                    _is_pytree_node = field.metadata.get("pytree_node", True)
+                    if _is_pytree_node:
+                        data_fields.add(field.name)
+                    else:
                         static_fields.add(field.name)
-    return static_fields
+
+    return fields, data_fields, static_fields
 
 
-def _inherited_data_fields(cls: type) -> set[str]:
+def _inherited_noserialize_fields(cls: type) -> set[str]:
     """
-    Returns the set of data fields of base classes
-    of the input class.
+    Returns the set of noserialize fields of base classes
+    of the input class
     """
-    data_fields = set()
+    noserialize_fields = set()
     for parent_class in cls.mro():
         if parent_class is not cls and parent_class is not Pytree:
             if issubclass(parent_class, Pytree):
-                data_fields.update(parent_class._pytree__data_fields)
+                noserialize_fields.update(parent_class._pytree__noserialize_fields)
             elif dataclasses.is_dataclass(parent_class):
                 for field in dataclasses.fields(parent_class):
-                    if field.metadata.get("pytree_node", True):
-                        data_fields.add(field.name)
-    return data_fields
+                    if not field.metadata.get("serialize", True):
+                        noserialize_fields.add(field.name)
+    return noserialize_fields
+
+
+def _inherited_sharded_fields(cls: type) -> set[str]:
+    """
+    Returns the set of noserialize fields of base classes
+    of the input class
+    """
+    sharded_fields = set()
+    for parent_class in cls.mro():
+        if parent_class is not cls and parent_class is not Pytree:
+            if issubclass(parent_class, Pytree):
+                sharded_fields.update(parent_class._pytree__sharded_fields)
+            elif dataclasses.is_dataclass(parent_class):
+                for field in dataclasses.fields(parent_class):
+                    if field.metadata.get("sharded", False):
+                        sharded_fields.add(field.name)
+    return sharded_fields
 
 
 def _inherited_cachedproperty_fields(cls: type) -> set[str]:
@@ -470,3 +625,40 @@ def _inherited_cachedproperty_fields(cls: type) -> set[str]:
                     if isinstance(field, CachedProperty):
                         cachedproperty_fields.add(field.name)
     return cachedproperty_fields
+
+
+def _inherited_defaults_setters(cls: type) -> set[Callable[[], Any]]:
+    """
+    Returns the set of default setters of base classes
+    of the input class.
+    """
+    default_setters = {}
+    for parent_class in cls.mro():
+        if parent_class is not cls and parent_class is not Pytree:
+            if issubclass(parent_class, Pytree):
+                default_setters.update(parent_class._pytree__default_setters)
+            elif dataclasses.is_dataclass(parent_class):
+                for field in dataclasses.fields(parent_class):
+                    if field.default is not dataclasses.MISSING:
+                        default_setters[field.name] = lambda: field.default
+                    elif field.default_factory is not dataclasses.MISSING:
+                        default_setters[field.name] = field.default_factory
+
+    return default_setters
+
+
+def compute_serialize_rename_fields(all_fields):
+    rename = []
+    for name, field in all_fields.items():
+        new_name = field.metadata.get("serialize_name", None)
+        if new_name is not None and new_name != name:
+            rename.append((name, new_name))
+    return tuple(sorted(rename))
+
+
+def unwrap_jax_prng_keys(maybe_key):
+    if isinstance(maybe_key, jax.Array) and jnp.issubdtype(
+        maybe_key.dtype, jax.dtypes.prng_key
+    ):
+        return jax.random.key_data(maybe_key)
+    return maybe_key

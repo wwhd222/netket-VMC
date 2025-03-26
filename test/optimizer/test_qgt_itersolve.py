@@ -98,6 +98,13 @@ models = {
 }
 
 
+def _unwrap(x):
+    if isinstance(x, partial):
+        return x.func
+    else:
+        return x
+
+
 @pytest.fixture(
     params=[pytest.param(modelT, id=name) for name, modelT in models.items()]
 )
@@ -153,7 +160,13 @@ def is_complex_failing(vstate, qgt_partial):
 @pytest.mark.parametrize(
     "chunk_size", [pytest.param(x, id=f"chunk={x}") for x in [None, 16]]
 )
-def test_qgt_solve(qgt, vstate, solver, _mpi_size, _mpi_rank):
+def test_qgt_solve(qgt, vstate, solver, chunk_size, _mpi_size, _mpi_rank):
+    if nk.utils.mpi.n_nodes > 1:
+        if _unwrap(solver) == jax.scipy.sparse.linalg.gmres:
+            pytest.xfail("mpi4jax effects are broken in iterative solvers")
+        elif _unwrap(qgt) == nk.optimizer.qgt.QGTOnTheFly and chunk_size is not None:
+            pytest.xfail("mpi4jax effects are broken in iterative solvers")
+
     if is_complex_failing(vstate, qgt):
         with pytest.raises(
             nk.errors.IllegalHolomorphicDeclarationForRealParametersError
@@ -217,9 +230,12 @@ def test_qgt_solve_with_x0(qgt, vstate):
 @pytest.mark.parametrize(
     "chunk_size", [pytest.param(x, id=f"chunk={x}") for x in [None, 16]]
 )
-def test_qgt_matmul(qgt, vstate, _mpi_size, _mpi_rank):
+def test_qgt_matmul(qgt, vstate, chunk_size, _mpi_size, _mpi_rank):
     if is_complex_failing(vstate, qgt):
         return
+    if nk.utils.mpi.n_nodes > 1:
+        if _unwrap(qgt) == nk.optimizer.qgt.QGTOnTheFly and chunk_size is not None:
+            pytest.xfail("mpi4jax effects are broken in iterative solvers")
 
     rtol, atol = matmul_tol[nk.jax.dtype_real(vstate.model.param_dtype)]
 
@@ -275,9 +291,12 @@ def test_qgt_matmul(qgt, vstate, _mpi_size, _mpi_rank):
 @pytest.mark.parametrize(
     "chunk_size", [pytest.param(x, id=f"chunk={x}") for x in [None, 16]]
 )
-def test_qgt_dense(qgt, vstate, _mpi_size, _mpi_rank):
+def test_qgt_dense(qgt, vstate, chunk_size, _mpi_size, _mpi_rank):
     if is_complex_failing(vstate, qgt):
         return
+    if nk.utils.mpi.n_nodes > 1:
+        if _unwrap(qgt) == nk.optimizer.qgt.QGTOnTheFly and chunk_size is not None:
+            pytest.xfail("mpi4jax effects are broken in iterative solvers")
 
     rtol, atol = dense_tol[nk.jax.dtype_real(vstate.model.param_dtype)]
 
@@ -364,3 +383,43 @@ def test_qgt_holomorphic_real_pars_throws():
         vstate.quantum_geometric_tensor(qgt.QGTJacobianDense(holomorphic=True))
 
     return vstate
+
+
+def test_qgt_onthefly_correct_chunking_selection():
+    # construct a vstate
+    N = 5
+    hi = nk.hilbert.Spin(1 / 2, N)
+    vstate = nk.vqs.MCState(
+        nk.sampler.MetropolisLocal(hi, n_chains=16),
+        nk.models.RBM(alpha=1),
+        n_samples=16 * 4,
+    )
+
+    from netket.optimizer.qgt.qgt_onthefly_logic import _mat_vec
+
+    # in standard version
+    if not nk.config.netket_experimental_sharding:
+        # check is the non chunked code
+        QGT = nk.optimizer.qgt.QGTOnTheFly(vstate)
+        assert QGT._mat_vec.func is _mat_vec
+
+        # this just check it's not the unchunked code. We only have 2 implementations
+        # so that's enough.
+        vstate.chunk_size = vstate.n_samples // (2 * nk.jax.sharding.device_count())
+        QGT = nk.optimizer.qgt.QGTOnTheFly(vstate)
+        assert QGT._mat_vec.func is not _mat_vec
+    # in sharding version
+    else:
+        # check is the non chunked code
+        QGT = nk.optimizer.qgt.QGTOnTheFly(vstate)
+        assert QGT._mat_vec.func is _mat_vec
+
+        # check is still non chunked
+        vstate.chunk_size = vstate.n_samples // len(jax.devices())
+        QGT = nk.optimizer.qgt.QGTOnTheFly(vstate)
+        assert QGT._mat_vec.func is _mat_vec
+
+        # check is chunked
+        vstate.chunk_size = vstate.n_samples // (2 * len(jax.devices()))
+        QGT = nk.optimizer.qgt.QGTOnTheFly(vstate)
+        assert QGT._mat_vec.func is not _mat_vec

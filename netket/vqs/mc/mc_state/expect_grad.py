@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from functools import partial
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import jax
 from jax import numpy as jnp
@@ -42,10 +42,10 @@ from .state import MCState
 def expect_and_grad_default_formula(
     vstate: MCState,
     Ô: AbstractOperator,
-    chunk_size: Optional[int],
+    chunk_size: int | None,
     *args,
     mutable: CollectionFilter = False,
-    use_covariance: Optional[bool] = None,
+    use_covariance: bool | None = None,
 ) -> tuple[Stats, PyTree]:
     if use_covariance is None:
         use_covariance = Ô.is_hermitian
@@ -69,10 +69,10 @@ def expect_and_grad_default_formula(
 def expect_and_grad_squared_op(
     vstate: MCState,
     Ô: Squared,
-    chunk_size: Optional[int],
+    chunk_size: int | None,
     *args,
     mutable: CollectionFilter = False,
-    use_covariance: Optional[bool] = None,
+    use_covariance: bool | None = None,
 ) -> tuple[Stats, PyTree]:
     if use_covariance is not None:
         raise ValueError(
@@ -109,8 +109,8 @@ def expect_and_grad_nonhermitian(
     Ō, Ō_grad, new_model_state = _grad_expect_nonherm_kernel(
         local_estimator_fun,
         vstate._apply_fun,
-        vstate.sampler.machine_pow,
         mutable,
+        vstate.sampler.machine_pow,
         vstate.parameters,
         vstate.model_state,
         σ,
@@ -123,12 +123,12 @@ def expect_and_grad_nonhermitian(
     return Ō, Ō_grad
 
 
-@partial(jax.jit, static_argnums=(0, 1, 2, 3))
+@partial(jax.jit, static_argnums=(0, 1, 2))
 def _grad_expect_nonherm_kernel(
     local_value_kernel: Callable,
     model_apply_fun: Callable,
-    machine_pow: int,
     mutable: CollectionFilter,
+    machine_pow: float,
     parameters: PyTree,
     model_state: PyTree,
     σ: jnp.ndarray,
@@ -160,6 +160,7 @@ def _grad_expect_nonherm_kernel(
         expect_closure_pars, parameters, has_aux=True, conjugate=True
     )
     Ō_pars_grad = Ō_pb(jnp.ones_like(Ō))[0]
+    Ō_pars_grad, _ = mpi.mpi_sum_jax(Ō_pars_grad)
 
     if is_mutable:
         raise NotImplementedError(
@@ -170,6 +171,6 @@ def _grad_expect_nonherm_kernel(
 
     return (
         Ō_stats,
-        jax.tree_util.tree_map(lambda x: mpi.mpi_mean_jax(x)[0], Ō_pars_grad),
+        Ō_pars_grad,
         new_model_state,
     )

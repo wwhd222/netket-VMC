@@ -29,7 +29,7 @@ import netket as nk
 
 from .. import common
 
-pytestmark = common.skipif_mpi
+pytestmark = common.skipif_distributed
 
 SEED = 111
 
@@ -95,14 +95,6 @@ def test_variables_from_tar(vstate, tmp_path):
 
         with pytest.raises(KeyError):
             nkx.vqs.variables_from_tar(name, vstate2.variables, 15)
-
-
-def test_deprecated_names():
-    with pytest.warns(FutureWarning):
-        assert nkx.vqs.variables_from_file == nk.vqs.experimental.variables_from_file
-
-    with pytest.warns(FutureWarning):
-        assert nkx.vqs.variables_from_tar == nk.vqs.experimental.variables_from_tar
 
 
 def save_binary_to_tar(tar_file, byte_data, name):

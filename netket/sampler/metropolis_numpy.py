@@ -14,9 +14,10 @@
 
 import math
 from dataclasses import dataclass
-from functools import partial
+from functools import partial, wraps
 
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 import numpy as np
 from numba import jit
@@ -26,10 +27,11 @@ import jax
 from netket.hilbert import AbstractHilbert
 from netket.utils.mpi import mpi_sum, n_nodes
 from netket.utils.types import PyTree
+from netket import config
 
 import netket.jax as nkjax
 
-from .metropolis import MetropolisSampler
+from .metropolis import MetropolisSampler, MetropolisRule
 
 
 @dataclass
@@ -39,10 +41,8 @@ class MetropolisNumpySamplerState:
     σ1: np.ndarray
     """Holds a proposed configuration (preallocation)."""
 
-    log_values: np.ndarray
+    log_prob: np.ndarray
     """Holds model(pars, σ) for the current σ (preallocation)."""
-    log_values_1: np.ndarray
-    """Holds model(pars, σ1) for the last σ1 (preallocation)."""
     log_prob_corr: np.ndarray
     """Holds optional acceptance correction (preallocation)."""
 
@@ -87,9 +87,12 @@ class MetropolisNumpySamplerState:
         return f"MetropolisNumpySamplerState({acc_string}rng state={self.rng})"
 
 
-@partial(jax.jit, static_argnums=0)
-def apply_model(machine, pars, weights):
-    return machine.apply(pars, weights)
+@partial(jax.jit, static_argnums=(0, 3))
+def apply_model(machine, pars, weights, chunk_size):
+    chunked = nkjax.apply_chunked(
+        machine.apply, in_axes=(None, 0), chunk_size=chunk_size
+    )
+    return chunked(pars, weights)
 
 
 class MetropolisSamplerNumpy(MetropolisSampler):
@@ -109,7 +112,41 @@ class MetropolisSamplerNumpy(MetropolisSampler):
     very poorly on jax so this is a good workaround.
 
     See :ref:`netket.sampler.MetropolisSampler` for more information.
+
+    .. warning::
+       This sampler only works on the CPU. To use the Hamiltonian sampler with GPUs, you
+       should use :class:`netket.sampler.MetropolisHamiltonian`.
+
+       This sampler is largely outdated, and we recommend not to use them. Little effort has
+       been put into improving performance in those samplers after 2021.
+
+       If you have a complicated transitions rule, consider instead using a `jax.pure_callback`.
     """
+
+    @wraps(MetropolisSampler.__init__)
+    def __init__(self, hilbert: AbstractHilbert, rule: MetropolisRule, **kwargs):
+        super().__init__(hilbert, rule, **kwargs)
+        # standard samplers use jax arrays, this must be a numpy array
+        self.machine_pow = np.array(self.machine_pow)
+
+    @property
+    def n_batches(self) -> int:
+        r"""
+        The batch size of the configuration $\sigma$ used by this sampler on this
+        jax process.
+
+        This is used to determine the shape of the batches generated in a single process.
+        This is needed because when using MPI, every process must create a batch of chains
+        of :attr:`~Sampler.n_chains_per_rank`, while when using the experimental sharding
+        mode we must declare the full shape on every jax process, therefore this returns
+        :attr:`~Sampler.n_chains`.
+
+        Usage of this flag is required to support both MPI and sharding.
+
+        Samplers may override this to have a larger batch size, for example to
+        propagate multiple replicas (in the case of parallel tempering).
+        """
+        return self.n_chains_per_rank
 
     def _init_state(sampler, machine, parameters, key):
         rgen = np.random.default_rng(np.asarray(key))
@@ -121,8 +158,7 @@ class MetropolisSamplerNumpy(MetropolisSampler):
         state = MetropolisNumpySamplerState(
             σ=σ,
             σ1=np.copy(σ),
-            log_values=np.zeros(sampler.n_batches, dtype=ma_out.dtype),
-            log_values_1=np.zeros(sampler.n_batches, dtype=ma_out.dtype),
+            log_prob=np.zeros(sampler.n_batches, dtype=ma_out.dtype),
             log_prob_corr=np.zeros(
                 sampler.n_batches, dtype=nkjax.dtype_real(ma_out.dtype)
             ),
@@ -152,7 +188,10 @@ class MetropolisSamplerNumpy(MetropolisSampler):
             )
 
         state.rule_state = sampler.rule.reset(sampler, machine, parameters, state)
-        state.log_values = np.copy(apply_model(machine, parameters, state.σ))
+        state.log_prob = np.array(
+            sampler.machine_pow
+            * apply_model(machine, parameters, state.σ, sampler.chunk_size).real
+        )
 
         state._accepted_samples = 0
         state._total_samples = 0
@@ -162,8 +201,7 @@ class MetropolisSamplerNumpy(MetropolisSampler):
     def _sample_next(sampler, machine, parameters, state):
         σ = state.σ
         σ1 = state.σ1
-        log_values = state.log_values
-        log_values_1 = state.log_values_1
+        log_prob = state.log_prob
         log_prob_corr = state.log_prob_corr
         mpow = sampler.machine_pow
 
@@ -176,7 +214,33 @@ class MetropolisSamplerNumpy(MetropolisSampler):
             # σp, log_prob_correction =
             sampler.rule.transition(sampler, machine, parameters, state, state.rng, σ)
 
-            log_values_1 = np.asarray(apply_model(machine, parameters, σ1))
+            if config.netket_experimental_sharding:
+                from jax.experimental.multihost_utils import (
+                    host_local_array_to_global_array,
+                    global_array_to_host_local_array,
+                )
+
+                global_mesh = jax.sharding.Mesh(jax.devices(), "x")
+                pspecs = jax.sharding.PartitionSpec("x")
+
+                all_samples = host_local_array_to_global_array(σ1, global_mesh, pspecs)
+                _log_prob = (
+                    mpow
+                    * apply_model(
+                        machine, parameters, all_samples, sampler.chunk_size
+                    ).real
+                )
+                assert len(_log_prob.addressable_shards) == 1
+                _log_prob = global_array_to_host_local_array(
+                    log_prob, global_mesh, pspecs
+                )
+            else:
+                _log_prob = (
+                    mpow * apply_model(machine, parameters, σ1, sampler.chunk_size).real
+                )
+
+            log_prob_1 = np.copy(_log_prob)
+            assert log_prob_1.shape == σ1.shape[:-1]
 
             random_uniform = rgen.uniform(0, 1, size=σ.shape[0])
 
@@ -184,17 +248,17 @@ class MetropolisSamplerNumpy(MetropolisSampler):
             accepted += acceptance_kernel(
                 σ,
                 σ1,
-                log_values,
-                log_values_1,
+                log_prob,
+                log_prob_1,
                 log_prob_corr,
                 mpow,
                 random_uniform,
             )
 
-        state.n_steps_proc += sampler.sweep_size * sampler.n_chains
+        state.n_steps_proc += sampler.sweep_size * sampler.n_chains_per_rank
         state.n_accepted_proc += accepted
 
-        return state, state.σ
+        return state, (state.σ, state.log_prob)
 
     def _sample_chain(
         sampler,
@@ -202,19 +266,27 @@ class MetropolisSamplerNumpy(MetropolisSampler):
         parameters: PyTree,
         state: MetropolisNumpySamplerState,
         chain_length: int,
+        return_probabilties: bool = False,
     ) -> tuple[jnp.ndarray, MetropolisNumpySamplerState]:
         samples = np.empty(
-            (chain_length, sampler.n_chains, sampler.hilbert.size), dtype=sampler.dtype
+            (chain_length, sampler.n_chains_per_rank, sampler.hilbert.size),
+            dtype=sampler.dtype,
         )
+        log_probs = np.empty((chain_length, sampler.n_chains_per_rank), dtype=float)
 
         for i in range(chain_length):
-            state, σ = sampler.sample_next(machine, parameters, state)
+            state, (σ, log_prob) = sampler.sample_next(machine, parameters, state)
             samples[i] = σ
+            log_probs[i] = log_prob
 
-        # make it (n_chains, n_samples_per_chain) as expected by netket.stats.statistics
+        # make it (n_chains_per_rank, n_samples_per_chain, hi.size) as expected by netket.stats.statistics
         samples = np.swapaxes(samples, 0, 1)
+        log_probs = np.swapaxes(log_probs, 0, 1)
 
-        return samples, state
+        if return_probabilties:
+            return samples, log_probs, state
+        else:
+            return samples, state
 
     def __repr__(sampler):
         return (
@@ -242,18 +314,16 @@ class MetropolisSamplerNumpy(MetropolisSampler):
 
 @jit(nopython=True)
 def acceptance_kernel(
-    σ, σ1, log_values, log_values_1, log_prob_corr, machine_pow, random_uniform
+    σ, σ1, log_prob, log_prob_1, log_prob_corr, machine_pow, random_uniform
 ):
     accepted = 0
 
     for i in range(σ.shape[0]):
-        prob = np.exp(
-            machine_pow * (log_values_1[i] - log_values[i]).real + log_prob_corr[i]
-        )
+        prob = np.exp(log_prob_1[i] - log_prob[i] + log_prob_corr[i])
         assert not math.isnan(prob)
 
         if prob > random_uniform[i]:
-            log_values[i] = log_values_1[i]
+            log_prob[i] = log_prob_1[i]
             σ[i] = σ1[i]
             accepted += 1
 

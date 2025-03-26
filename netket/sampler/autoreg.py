@@ -55,7 +55,7 @@ class ARDirectSampler(Sampler):
         self,
         hilbert: DiscreteHilbert,
         machine_pow: None = None,
-        dtype: DType = float,
+        dtype: DType = None,
     ):
         """
         Construct an autoregressive direct sampler.
@@ -80,7 +80,9 @@ class ARDirectSampler(Sampler):
                 "touch with us. We are interested!)"
             )
 
-        return super().__init__(hilbert, machine_pow=2, dtype=dtype)
+        super().__init__(hilbert, machine_pow=2, dtype=dtype)
+        # ensure machine_pow is a float, as it can be sometimes used around...
+        self.machine_pow = float(self.machine_pow)
 
     @property
     def is_exact(sampler):

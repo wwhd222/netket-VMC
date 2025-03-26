@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 import numpy as np
 import jax
@@ -29,7 +28,7 @@ class HashableArray:
     The underlying array can also be accessed using :code:`numpy.asarray(self)`.
     """
 
-    def __init__(self, wrapped: Array):
+    def __init__(self, wrapped: Array | "HashableArray"):
         """
         Wraps an array into an object that is hashable, and that can be
         converted again into an array.
@@ -55,7 +54,7 @@ class HashableArray:
                 wrapped.flags.writeable = False
 
         self._wrapped: np.array = wrapped
-        self._hash: Optional[int] = None
+        self._hash: int | None = None
 
     @property
     def wrapped(self):

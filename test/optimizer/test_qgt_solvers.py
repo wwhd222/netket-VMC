@@ -16,6 +16,8 @@ import pytest
 
 from functools import partial
 
+import numpy as np
+
 import jax
 import jax.flatten_util
 from jax.nn.initializers import normal
@@ -147,3 +149,49 @@ def test_qgt_explicit_chunk_size(SType):
     vs = nk.vqs.MCState(sa, ma, n_samples=16 * 8, n_discard_per_chain=100)
 
     SType(vs, chunk_size=16 * 4)
+
+
+@pytest.mark.parametrize(
+    "solver",
+    [pytest.param(solver, id=name) for name, solver in solvers.items()],
+)
+def test_solver_kwargs_partial_api(solver):
+    # create the partial interface
+    solver_partial = solver(x0=None)
+    assert isinstance(solver_partial, partial)
+    assert len(solver_partial.args) == 0
+    assert solver_partial.keywords == {"x0": None}
+
+
+@pytest.mark.parametrize(
+    "solver",
+    [pytest.param(solver, id=name) for name, solver in solvers.items()],
+)
+def test_solver_dense_api(solver):
+    A = jax.random.normal(jax.random.key(1), (10, 10))
+    A = A @ A.conj().T
+    b = jax.random.normal(jax.random.key(2), (10,))
+
+    x, _ = solver(A, b)
+    np.testing.assert_allclose(A @ x, b)
+
+
+# Not all solvers had 'rcond' deprecated, so we test only for pinv and pinv_smooth.
+@pytest.mark.parametrize("solver_func", [solvers["pinv"], solvers["pinv_smooth"]])
+def test_solver_rcond_deprecation(solver_func):
+    key = jax.random.PRNGKey(0)
+    A = jax.random.normal(key, (10, 10))
+    A = A @ A.T  # Make PSD
+    b = jax.random.normal(key, (10,))
+
+    # Test with new argument (rtol)
+    x_new, _ = solver_func(A, b, rtol=1e-6)
+
+    with pytest.warns(FutureWarning, match="'rcond' argument is deprecated"):
+        x_old, _ = solver_func(A, b, rcond=1e-6)
+
+    # Check that results are identical
+    np.testing.assert_allclose(x_new, x_old, rtol=1e-10)
+
+    # Check that the solution is correct
+    np.testing.assert_allclose(A @ x_new, b, rtol=1e-6)

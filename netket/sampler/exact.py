@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Optional
+from typing import Any
 from functools import partial
 
 import jax
@@ -23,13 +23,18 @@ from netket import config
 from netket.hilbert import DiscreteHilbert
 from netket.nn import to_array
 from netket.utils.types import PyTree, SeedT, DType
+from netket.utils import struct
 
 from .base import Sampler, SamplerState
 
 
 class ExactSamplerState(SamplerState):
-    pdf: Any
-    rng: Any
+    pdf: jnp.ndarray = struct.field(serialize=False)
+    rng: jnp.ndarray = struct.field(
+        sharded=struct.ShardedFieldSpec(
+            sharded=True, deserialization_function="relaxed-rng-key"
+        )
+    )
 
     def __init__(self, pdf: Any, rng: Any):
         self.pdf = pdf
@@ -55,7 +60,7 @@ class ExactSampler(Sampler):
         self,
         hilbert: DiscreteHilbert,
         machine_pow: int = 2,
-        dtype: DType = float,
+        dtype: DType = None,
     ):
         """
         Construct an exact sampler.
@@ -75,7 +80,7 @@ class ExactSampler(Sampler):
         sampler,
         machine: nn.Module,
         parameters: PyTree,
-        seed: Optional[SeedT] = None,
+        seed: SeedT | None = None,
     ):
         pdf = jnp.zeros(sampler.hilbert.n_states, dtype=jnp.float32)
         return ExactSamplerState(pdf=pdf, rng=seed)

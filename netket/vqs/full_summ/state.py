@@ -14,24 +14,30 @@
 
 import warnings
 from functools import partial
-from typing import Any, Callable, Optional
+from typing import Any
+from collections.abc import Callable
 
 import jax
 from jax import numpy as jnp
 
-import flax
-from flax import serialization
+from flax import serialization, core as fcore
 from flax.core.scope import CollectionFilter, DenyList  # noqa: F401
 
+from netket import config
 from netket import jax as nkjax
 from netket import nn as nknn
-from netket.hilbert import AbstractHilbert
-from netket.utils import maybe_wrap_module, wrap_afun, wrap_to_support_scalar
+from netket.hilbert.discrete_hilbert import DiscreteHilbert
+from netket.utils import (
+    model_frameworks,
+    wrap_afun,
+    wrap_to_support_scalar,
+    _serialization as serialization_utils,
+)
 from netket.utils.types import PyTree, SeedT, NNInitFunc
 from netket.optimizer import LinearOperator
 from netket.optimizer.qgt import QGTAuto
 
-from ..base import VariationalState
+from ..base import VariationalState, QGTConstructor
 from ..mc.mc_state.state import check_chunk_size, _is_power_of_two
 
 
@@ -62,26 +68,23 @@ class FullSumState(VariationalState):
     the parameters.
     """
 
-    model_state: Optional[PyTree]
-    """An Optional PyTree encoding a mutable state of the model that is not trained."""
-
-    _init_fun: Callable = None
+    _init_fun: Callable | None = None
     """The function used to initialise the parameters and model_state"""
-    _apply_fun: Callable = None
+    _apply_fun: Callable
     """The function used to evaluate the model"""
 
-    _chunk_size: Optional[int] = None
+    _chunk_size: int | None = None
 
     def __init__(
         self,
-        hilbert: AbstractHilbert,
+        hilbert: DiscreteHilbert,
         model=None,
         *,
-        chunk_size: Optional[int] = None,
-        variables: Optional[PyTree] = None,
-        init_fun: NNInitFunc = None,
-        apply_fun: Optional[Callable] = None,
-        seed: Optional[SeedT] = None,
+        chunk_size: int | None = None,
+        variables: PyTree | None = None,
+        init_fun: NNInitFunc | None = None,
+        apply_fun: Callable | None = None,
+        seed: SeedT | None = None,
         mutable: CollectionFilter = False,
         training_kwargs: dict = {},
         dtype=float,
@@ -109,6 +112,22 @@ class FullSumState(VariationalState):
                 but will trade a higher computational cost for lower memory cost.
         """
         super().__init__(hilbert)
+        self._model_framework = None
+
+        if variables is not None:
+            # TODO: Always have shardings...
+            if config.netket_experimental_sharding:
+                par_sharding = jax.sharding.PositionalSharding(
+                    jax.devices()
+                ).replicate()
+            else:
+                par_sharding = jax.sharding.SingleDeviceSharding(jax.devices()[0])
+            variables = jax.tree_util.tree_map(
+                lambda x: jax.lax.with_sharding_constraint(
+                    jnp.asarray(x), par_sharding
+                ),
+                variables,
+            )
 
         # Init type 1: pass in a model
         if model is not None:
@@ -116,7 +135,12 @@ class FullSumState(VariationalState):
             # Wrap it in an HashablePartial because if two instances of the same model are provided,
             # model.apply and model2.apply will be different methods forcing recompilation, but
             # model and model2 will have the same hash.
-            _, model = maybe_wrap_module(model)
+            self._model_framework = model_frameworks.identify_framework(model)
+            _maybe_unwrapped_variables, model = self._model_framework.wrap(model)
+
+            if variables is None:
+                if _maybe_unwrapped_variables is not None:
+                    variables = _maybe_unwrapped_variables
 
             self._model = model
 
@@ -145,7 +169,7 @@ class FullSumState(VariationalState):
             raise ValueError("Must either pass the model or apply_fun.")
 
         self.mutable = mutable
-        self.training_kwargs = flax.core.freeze(training_kwargs)
+        self.training_kwargs = fcore.freeze(training_kwargs)
 
         if variables is not None:
             self.variables = variables
@@ -184,13 +208,24 @@ class FullSumState(VariationalState):
 
         key = nkjax.PRNGKey(seed)
 
-        dummy_input = jnp.zeros((1, self.hilbert.size), dtype=dtype)
+        dummy_input = self.hilbert.random_state(key, 1, dtype=dtype)
 
         variables = jit_evaluate(self._init_fun, {"params": key}, dummy_input)
         self.variables = variables
 
     @property
-    def chunk_size(self) -> int:
+    def hilbert(self) -> DiscreteHilbert:
+        r"""The descriptor of the Hilbert space
+        on which this variational state is defined.
+
+        .. note::
+
+            Full summation states only work over discrete hilbert spaces.
+        """
+        return self._hilbert  # type: ignore
+
+    @property
+    def chunk_size(self) -> int | None:
         """
         Suggested *maximum size* of the chunks used in forward and backward evaluations
         of the Neural Network model. If your inputs are smaller than the chunk size
@@ -213,14 +248,14 @@ class FullSumState(VariationalState):
         return self._chunk_size
 
     @chunk_size.setter
-    def chunk_size(self, chunk_size: Optional[int]):
+    def chunk_size(self, chunk_size: int | None):
         # disable chunks if it is None
         if chunk_size is None:
             self._chunk_size = None
             return
 
-        if chunk_size <= 0:
-            raise ValueError("Chunk size must be a positive integer. ")
+        if not isinstance(chunk_size, int) or chunk_size <= 0:
+            raise ValueError("Chunk size must be a positive INTEGER. ")
 
         if not _is_power_of_two(chunk_size):
             warnings.warn(
@@ -241,13 +276,15 @@ class FullSumState(VariationalState):
         self._pdf = None
 
     @property
-    def model(self) -> Optional[Any]:
+    def model(self) -> Any | None:
         """Returns the model definition of this variational state.
 
         This field is optional, and is set to `None` if the variational state has
         been initialized using a custom function.
         """
-        return self._model
+        if self._model_framework is not None:
+            return self._model_framework.unwrap(self._model, self.variables)
+        self._model
 
     def log_value(self, σ: jnp.ndarray) -> jnp.ndarray:
         r"""
@@ -268,7 +305,7 @@ class FullSumState(VariationalState):
         return jit_evaluate(self._apply_fun, self.variables, σ)
 
     def quantum_geometric_tensor(
-        self, qgt_T: Optional[LinearOperator] = None
+        self, qgt_T: QGTConstructor | None = None
     ) -> LinearOperator:
         r"""Computes an estimate of the quantum geometric tensor G_ij.
         This function returns a linear operator that can be used to apply G_ij to a given vector
@@ -283,9 +320,10 @@ class FullSumState(VariationalState):
         """
         if qgt_T is None:
             qgt_T = QGTAuto()
+
         return qgt_T(self)
 
-    def to_array(self, normalize: bool = True, allgather: bool = True) -> jnp.ndarray:
+    def to_array(self, normalize: bool = True, allgather: bool = True) -> jax.Array:
         if self._array is None and normalize:
             self._array = nknn.to_array(
                 self.hilbert,
@@ -308,7 +346,7 @@ class FullSumState(VariationalState):
                 chunk_size=self.chunk_size,
             )
 
-        return arr
+        return arr  # type: ignore
 
     def probability_distribution(self):
         if self._pdf is None:
@@ -339,7 +377,9 @@ class FullSumState(VariationalState):
 
 def serialize_FullSumState(vstate):
     state_dict = {
-        "variables": serialization.to_state_dict(vstate.variables),
+        "variables": serialization.to_state_dict(
+            serialization_utils.remove_prngkeys(vstate.variables)
+        ),
     }
     return state_dict
 
@@ -350,9 +390,19 @@ def deserialize_FullSumState(vstate, state_dict):
     new_vstate = copy.copy(vstate)
     new_vstate.reset()
 
-    new_vstate.variables = serialization.from_state_dict(
-        vstate.variables, state_dict["variables"]
+    vars = jax.tree_util.tree_map(
+        jnp.asarray,
+        serialization.from_state_dict(vstate.variables, state_dict["variables"]),
     )
+    vars = serialization_utils.restore_prngkeys(vstate.variables, vars)
+    if config.netket_experimental_sharding:
+        vars = jax.tree_util.tree_map(
+            lambda x, y: jax.lax.with_sharding_constraint(jnp.asarray(y), x.sharding),
+            vstate.variables,
+            vars,
+        )
+
+    new_vstate.variables = vars
     return new_vstate
 
 

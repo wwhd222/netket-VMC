@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, Any, Union
+from typing import Any, Literal, overload, TypeVar
+from collections.abc import Callable
 from functools import partial
 
 import jax
@@ -23,6 +24,11 @@ from jax.tree_util import Partial, tree_map
 from netket.utils import HashablePartial
 
 from ._utils_tree import tree_leaf_iscomplex, eval_shape
+
+# These TypeVars are used below to express the fact that function types
+# (i.e. call signatures) are invariant under the vmap transformation.
+T = TypeVar("T")
+U = TypeVar("U")
 
 
 # _grad_CC, _RR and _RC are the chunked gradient functions for machines going
@@ -64,7 +70,7 @@ def vjp_fun_cc(out_dtype, conjugate, _vjp_fun, ȳ):
 
 def vjp_cc(
     fun: Callable, *primals, has_aux: bool = False, conjugate: bool = False
-) -> Union[tuple[Any, Callable], tuple[Any, Callable, Any]]:
+) -> tuple[Any, Callable] | tuple[Any, Callable, Any]:
     if has_aux:
         out, _vjp_fun, aux = jax.vjp(fun, *primals, has_aux=True)
     else:
@@ -94,7 +100,7 @@ def vjp_fun_rr(primals_out_dtype, conjugate, _vjp_fun, ȳ):
 
 def vjp_rr(
     fun: Callable, *primals, has_aux: bool = False, conjugate: bool = False
-) -> Union[tuple[Any, Callable], tuple[Any, Callable, Any]]:
+) -> tuple[Any, Callable] | tuple[Any, Callable, Any]:
     if has_aux:
         primals_out, _vjp_fun, aux = jax.vjp(fun, *primals, has_aux=True)
     else:
@@ -135,7 +141,7 @@ def vjp_fun_rc(vals_r_dtype, vals_j_dtype, conjugate, vjp_r_fun, vjp_j_fun, ȳ)
 
 def vjp_rc(
     fun: Callable, *primals, has_aux: bool = False, conjugate: bool = False
-) -> Union[tuple[Any, Callable], tuple[Any, Callable, Any]]:
+) -> tuple[Any, Callable] | tuple[Any, Callable, Any]:
     if has_aux:
 
         def real_fun(*primals):
@@ -171,9 +177,27 @@ def vjp_rc(
 
 
 # This function dispatches to the right
+@overload
+def vjp(
+    fun: Callable[..., T],
+    *primals: Any,
+    has_aux: Literal[False] = False,
+    conjugate: bool = False,
+) -> tuple[T, Callable]: ...
+
+
+@overload
+def vjp(
+    fun: Callable[..., tuple[T, U]],
+    *primals: Any,
+    has_aux: Literal[True],
+    conjugate: bool = False,
+) -> tuple[T, Callable, U]: ...
+
+
 def vjp(
     fun: Callable, *primals, has_aux: bool = False, conjugate: bool = False
-) -> Union[tuple[Any, Callable], tuple[Any, Callable, Any]]:
+) -> tuple[Any, Callable] | tuple[Any, Callable, Any]:
     # output dtype
     out_shape = eval_shape(fun, *primals, has_aux=has_aux)
 

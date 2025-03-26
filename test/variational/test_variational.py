@@ -29,7 +29,7 @@ from .. import common
 
 nk.config.update("NETKET_EXPERIMENTAL", True)
 
-SEED = 2148364
+SEED = 2148365
 
 machines = {}
 
@@ -94,6 +94,14 @@ for i in range(H.hilbert.size):
     H += nk.operator.spin.sigmap(H.hilbert, i)
 
 operators["operator:(Non Hermitian)"] = H
+
+# Remove non jax operators when sharding is activated
+if nk.config.netket_experimental_sharding:
+    _operators = {}
+    for k, o in operators.items():
+        if isinstance(o, nk.operator.DiscreteJaxOperator):
+            _operators[k] = o
+    operators = _operators
 
 
 @pytest.fixture(params=[pytest.param(ma, id=name) for name, ma in machines.items()])
@@ -172,7 +180,7 @@ def test_n_samples_api(vstate, _device_count):
     check_consistent(vstate, _device_count)
 
     vstate.n_discard_per_chain = None
-    assert vstate.n_discard_per_chain == vstate.n_samples // 10
+    assert vstate.n_discard_per_chain == 5
 
     vstate.n_samples = 3
     check_consistent(vstate, _device_count)
@@ -193,9 +201,10 @@ def test_n_samples_api(vstate, _device_count):
 def test_chunk_size_api(vstate, _mpi_size):
     assert vstate.chunk_size is None
 
-    with raises(
-        ValueError,
-    ):
+    with raises(ValueError):
+        vstate.chunk_size = 1.5
+
+    with raises(ValueError):
         vstate.chunk_size = -1
 
     vstate.n_samples = 1008
@@ -214,21 +223,15 @@ def test_chunk_size_api(vstate, _mpi_size):
     vstate.n_samples = 1008 * 2
     assert vstate.chunk_size == 126
 
-    with raises(
-        ValueError,
-    ):
+    with raises(ValueError):
         vstate.chunk_size = 500
 
     _ = vstate.sample()
     _ = vstate.sample(n_samples=vstate.n_samples)
-    with raises(
-        ValueError,
-    ):
+    with raises(ValueError):
         vstate.sample(n_samples=1008 + 16)
 
-    with raises(
-        ValueError,
-    ):
+    with raises(ValueError):
         vstate.sample(n_samples=1008, chain_length=100)
 
 
@@ -307,6 +310,7 @@ def test_init_parameters(vstate):
 
 
 @common.skipif_mpi
+@common.xfailif_sharding
 @pytest.mark.parametrize(
     "operator",
     [
@@ -348,11 +352,13 @@ def test_qutip_conversion(vstate):
         pytest.param(
             op,
             id=name,
-            marks=pytest.mark.xfail(
-                reason="MUSTFIX: Non hermitian gradient is known to be wrong"
-            )
-            if not op.is_hermitian
-            else [],
+            marks=(
+                pytest.mark.xfail(
+                    reason="MUSTFIX: Non hermitian gradient is known to be wrong"
+                )
+                if not op.is_hermitian
+                else []
+            ),
         )
         for name, op in operators.items()
     ],
@@ -415,11 +421,13 @@ def test_expect(vstate, operator):
         pytest.param(
             op,
             id=name,
-            marks=pytest.mark.xfail(
-                reason="MUSTFIX: Non-hermitian and Squared forces known to be wrong"
-            )
-            if isinstance(op, nk.operator.Squared) or (not op.is_hermitian)
-            else [],
+            marks=(
+                pytest.mark.xfail(
+                    reason="MUSTFIX: Non-hermitian and Squared forces known to be wrong"
+                )
+                if isinstance(op, nk.operator.Squared) or (not op.is_hermitian)
+                else []
+            ),
         )
         for name, op in operators.items()
     ],
@@ -473,7 +481,7 @@ def test_local_estimators(vstate, operator):
 # This only checks that the code runs.
 @common.xfailif_mpi
 def test_expect_grad_nonhermitian_works(vstate):
-    op = nk.operator.spin.sigmap(vstate.hilbert, 0)
+    op = nk.operator.spin.sigmap(vstate.hilbert, 0).to_jax_operator()
     O_stat, O_grad = vstate.expect_and_grad(op)
 
 
@@ -503,9 +511,9 @@ def test_expect_chunking(vstate, operator, n_chunks):
     )
 
     vstate.chunk_size = None
-    grad_nochunk = vstate.grad(operator)
+    grad_nochunk = vstate.expect_and_grad(operator)
     vstate.chunk_size = chunk_size
-    grad_chunk = vstate.grad(operator)
+    grad_chunk = vstate.expect_and_grad(operator)
 
     jax.tree_util.tree_map(
         partial(np.testing.assert_allclose, atol=1e-13), grad_nochunk, grad_chunk
@@ -541,3 +549,17 @@ def test_reproducible_copy():
     # But different samples
     with pytest.raises(AssertionError):
         np.testing.assert_allclose(s1, s1_2)
+
+
+@common.skipif_distributed
+def test_error_wrong_variables():
+    hi = nk.hilbert.Spin(0.5, 4)
+    sa = nk.sampler.ExactSampler(hilbert=hi)
+    ma = nk.models.RBM(alpha=1)
+    vs = nk.vqs.MCState(sa, ma)
+    with pytest.raises(ValueError):
+        vs.variables = {"a": 1}
+    with pytest.raises(nk.errors.ParameterMismatchError):
+        vs.variables = {"params": {"a": 1}}
+    with pytest.raises(nk.errors.ParameterMismatchError):
+        vs.parameters = {"a": 1}

@@ -14,11 +14,9 @@
 
 import abc
 
-from typing import Optional, Union
 from collections.abc import Iterable
 
 import jax.numpy as jnp
-import numpy as np
 
 
 class AbstractHilbert(abc.ABC):
@@ -48,8 +46,8 @@ class AbstractHilbert(abc.ABC):
     def random_state(
         self,
         key=None,
-        size: Optional[int] = None,
-        dtype=np.float32,
+        size: int | None = None,
+        dtype=None,
     ) -> jnp.ndarray:
         r"""Generates either a single or a batch of uniformly distributed random states.
         Runs as :code:`random_state(self, key, size=None, dtype=np.float32)` by default.
@@ -73,16 +71,16 @@ class AbstractHilbert(abc.ABC):
             >>> hi = netket.hilbert.Qubit(N=2)
             >>> k1, k2 = jax.random.split(jax.random.PRNGKey(1))
             >>> print(hi.random_state(key=k1))
-            [1. 0.]
+            [0 0]
             >>> print(hi.random_state(key=k2, size=2))
-            [[0. 0.]
-             [0. 1.]]
+            [[0 0]
+             [0 0]]
         """
         from netket.hilbert import random
 
         return random.random_state(self, key, size, dtype=dtype)
 
-    def ptrace(self, sites: Union[int, Iterable]) -> "AbstractHilbert":
+    def ptrace(self, sites: int | Iterable) -> "AbstractHilbert":
         """Returns the hilbert space without the selected sites.
 
         Not all hilbert spaces support this operation.
@@ -128,7 +126,7 @@ class AbstractHilbert(abc.ABC):
 
         from .tensor_hilbert import TensorHilbert
 
-        return TensorHilbert(other, self)
+        return TensorHilbert(other, self)  # type: ignore[return-value]
 
     def _mul_sametype_(self, other: "AbstractHilbert") -> "AbstractHilbert":
         """This function can be implemented by subclasses to

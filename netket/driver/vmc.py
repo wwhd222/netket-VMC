@@ -12,18 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 from textwrap import dedent
-from inspect import signature
 
+from netket.utils import timing
 from netket.utils.types import PyTree, Optimizer
 from netket.operator import AbstractOperator
 from netket.stats import Stats
 from netket.optimizer import (
     identity_preconditioner,
     PreconditionerT,
-    _DeprecatedPreconditionerSignature,
 )
 from netket.vqs import VariationalState
 from netket.jax import tree_cast
@@ -103,15 +101,13 @@ class VMC(AbstractVariationalDriver):
         return self._preconditioner
 
     @preconditioner.setter
-    def preconditioner(self, val: Optional[PreconditionerT]):
+    def preconditioner(self, val: PreconditionerT | None):
         if val is None:
             val = identity_preconditioner
 
-        if len(signature(val).parameters) == 2:
-            val = _DeprecatedPreconditionerSignature(val)
-
         self._preconditioner = val
 
+    @timing.timed
     def _forward_and_backward(self):
         """
         Performs a number of VMC optimization steps.

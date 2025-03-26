@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Callable, Union
+from typing import Any, Union
+from collections.abc import Callable
 from collections.abc import Sequence
 
 import optax as _optax
@@ -30,7 +31,7 @@ JaxArray = _jax.Array
 
 ArrayLike = Any  # Objects that are valid inputs to (np|jnp).asarray.
 
-NNInitFunc = Callable[[PRNGKeyT, Shape, DType], Array]
+NNInitFunc = Callable[[PRNGKeyT, Shape, DType], _jax.Array]
 
 PyTree = Any
 

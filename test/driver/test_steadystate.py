@@ -1,4 +1,3 @@
-import pytest
 from pytest import raises
 
 import numpy as np
@@ -6,7 +5,7 @@ import netket as nk
 
 from .. import common
 
-pytestmark = common.skipif_mpi
+pytestmark = common.skipif_distributed
 
 SEED = 214748364
 
@@ -90,15 +89,3 @@ def test_no_preconditioner_api():
     driver.preconditioner = None
     assert driver.preconditioner(None, 1) == 1
     assert driver.preconditioner(None, 1, 2) == 1
-
-
-def test_preconditioner_deprecated_signature():
-    lind, vs, driver = _setup_ss()
-
-    sr = driver.preconditioner
-    _sr = lambda vstate, grad: sr(vstate, grad)
-
-    with pytest.warns(FutureWarning):
-        driver.preconditioner = _sr
-
-    driver.run(1)

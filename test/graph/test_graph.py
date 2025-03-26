@@ -37,7 +37,10 @@ from netket.utils import group
 
 from .. import common
 
-pytestmark = common.skipif_mpi
+import warnings
+from netket.errors import InitializePeriodicLatticeOnSmallLatticeWarning
+
+pytestmark = common.skipif_distributed
 
 graphs = [
     # star and tree
@@ -80,6 +83,7 @@ graphs = [
 ]
 
 symmetric_graph_names = [
+    "square_rotation_only",
     "square",
     "triangular",
     "honeycomb",
@@ -92,6 +96,8 @@ symmetric_graph_names = [
 ]
 
 symmetric_graphs = [
+    # Square with rotation group only
+    nk.graph.Square(3, point_group=group.planar.C(4)),
     # Square
     nk.graph.Square(3),
     # Triangular
@@ -114,19 +120,19 @@ symmetric_graphs = [
     nk.graph.Pyrochlore([3, 3, 3]),
 ]
 
-unit_cells = [9, 9, 9, 9, 9, 27, 27, 27, 27, 27]
+unit_cells = [9, 9, 9, 9, 9, 9, 27, 27, 27, 27, 27]
 
-atoms_per_unit_cell = [1, 1, 2, 3, 2, 1, 1, 1, 2, 4]
+atoms_per_unit_cell = [1, 1, 1, 2, 3, 2, 1, 1, 1, 2, 4]
 
-coordination_number = [4, 6, 3, 4, 3, 6, 8, 12, 4, 6]
+coordination_number = [4, 4, 6, 3, 4, 3, 6, 8, 12, 4, 6]
 
-dimension = [2, 2, 2, 2, 2, 3, 3, 3, 3, 3]
+dimension = [2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3]
 
-kvec = [(2 * pi / 3, 0)] + [(4 * pi / 3, 0)] * 4 + [(4 * pi / 3, 0, 0)] * 5
+kvec = [(0, 0), (2 * pi / 3, 0)] + [(4 * pi / 3, 0)] * 4 + [(4 * pi / 3, 0, 0)] * 5
 
-little_group_size = [2] + [6] * 3 + [1] + [8] * 5
+little_group_size = [4, 2] + [6] * 3 + [1] + [8] * 5
 
-little_group_irreps = [2] + [3] * 3 + [1] + [5] * 5
+little_group_irreps = [4, 2] + [3] * 3 + [1] + [5] * 5
 
 
 def test_next_neighbors():
@@ -356,20 +362,16 @@ def test_draw_lattices():
     # Just checking that lattices are drawn:
     lattices = [graph for graph in graphs if isinstance(graph, Lattice)]
     for lattice in lattices:
-        ndim = lattice.ndim
-        if ndim not in [1, 2]:
-            with pytest.raises(ValueError):
-                lattice.draw()
-        else:
-            _ = lattice.draw(
-                figsize=(1.2, 3),
-                node_color="blue",
-                node_size=600,
-                edge_color="green",
-                curvature=0.5,
-                font_size=20,
-                font_color="yellow",
-            )
+        _ = lattice.draw(
+            figsize=(1.2, 3),
+            node_color="blue",
+            node_size=600,
+            edge_color="green",
+            curvature=0.5,
+            font_size=20,
+            font_color="yellow",
+            show=False,
+        )
 
 
 def test_size_is_positive():
@@ -706,6 +708,10 @@ def test_union():
         assert ug.n_nodes == graph1.n_nodes + graph.n_nodes
         assert ug.n_edges == graph1.n_edges + graph.n_edges
 
+    # also test multiple graphs
+    ug = nk.graph.disjoint_union(*graphs)
+    assert ug.n_nodes == sum(g.n_nodes for g in graphs)
+
 
 def test_graph_conversions():
     igraph = ig.Graph.Star(6)
@@ -800,3 +806,68 @@ def test_one_arm_irrep():
         sgb.space_group_irreps(pi, 0),
         sgb.one_arm_irreps(pi, 0) + sgb.one_arm_irreps(0, pi)[[0, 2, 1, 3]],
     )
+
+
+def test_small_lattice_warning_single_dim():
+    with pytest.warns(
+        InitializePeriodicLatticeOnSmallLatticeWarning,
+    ) as record:
+        nk.graph.Grid([2], pbc=True)
+        nk.graph.Chain(2, pbc=True)
+    assert len(record) == 2, "All examples above should raise warnings but some didn't."
+    with warnings.catch_warnings():  # None of the following should raise warnings
+        warnings.simplefilter("error")
+        nk.graph.Grid([2], pbc=False)
+        nk.graph.Chain(2, pbc=False)
+        nk.graph.Hypercube(2, pbc=False)
+        nk.graph.Grid([3], pbc=True)
+        nk.graph.Chain(3, pbc=True)
+        nk.graph.Hypercube(3, pbc=True)
+        nk.graph.Grid([3], pbc=False)
+        nk.graph.Chain(3, pbc=False)
+        nk.graph.Hypercube(3, pbc=False)
+
+
+def test_small_lattice_warning_higher_dim():
+    with pytest.warns(
+        InitializePeriodicLatticeOnSmallLatticeWarning,
+    ) as record:
+        nk.graph.Triangular([2, 2], pbc=True)
+        nk.graph.Triangular([2, 3], pbc=True)
+        nk.graph.Triangular([2, 3], pbc=[True, False])
+        nk.graph.Triangular([3, 2], pbc=[False, True])
+        nk.graph.Grid([2, 2], pbc=True)
+        nk.graph.Grid([2, 3], pbc=True)
+        nk.graph.Grid([2, 3], pbc=[True, False])
+        nk.graph.Grid([3, 2], pbc=[False, True])
+        nk.graph.Grid([2, 3, 2], pbc=[False, True, True])
+        nk.graph.Grid([2, 3, 2], pbc=True)
+        nk.graph.Square(2, pbc=True)
+        nk.graph.Cube(2, pbc=True)
+    assert (
+        len(record) == 12
+    ), "All examples above should raise warnings but some didn't."
+    with warnings.catch_warnings():  # None of the following should raise warnings
+        warnings.simplefilter("error")
+        nk.graph.Triangular([2, 3], pbc=False)
+        nk.graph.Triangular([3, 2], pbc=False)
+        nk.graph.Triangular([2, 3], pbc=[False, True])
+        nk.graph.Triangular([3, 2], pbc=[True, False])
+        nk.graph.Grid([2, 3], pbc=False)
+        nk.graph.Grid([3, 2], pbc=False)
+        nk.graph.Grid([2, 3], pbc=[False, True])
+        nk.graph.Grid([3, 2], pbc=[True, False])
+        nk.graph.Grid([2, 3, 2], pbc=[False, True, False])
+        nk.graph.Triangular([2, 2], pbc=False)
+        nk.graph.Triangular([3, 3], pbc=True)
+        nk.graph.Triangular([3, 3], pbc=False)
+        nk.graph.Honeycomb([2, 2], pbc=True)
+        nk.graph.Honeycomb([2, 2], pbc=False)
+        nk.graph.Honeycomb([3, 3], pbc=True)
+        nk.graph.Honeycomb([3, 3], pbc=False)
+        nk.graph.Square(2, pbc=False)
+        nk.graph.Square(3, pbc=True)
+        nk.graph.Square(3, pbc=False)
+        nk.graph.Cube(2, pbc=False)
+        nk.graph.Cube(3, pbc=True)
+        nk.graph.Cube(3, pbc=False)

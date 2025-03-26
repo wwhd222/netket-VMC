@@ -11,12 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+#
 # Part of the code in this file is taken from
 # https://github.com/Nuclear-Physics-with-Machine-Learning/JAX_QMC_Public/blob/main/LICENSE
 # to which the original copyright applies
 #                    GNU AFFERO GENERAL PUBLIC LICENSE
-
+#
 
 from typing import Optional, TYPE_CHECKING
 
@@ -42,13 +42,33 @@ def autoset_default_gpu(COMM: Optional["mpi4py.MPI.Intracomm"], verbose: bool = 
     code does not run.
     """
     devices = jax.devices()
-    if len(devices) > 1 and any(d.device_kind == "gpu" for d in devices):
+    if len(devices) > 1 and any(d.platform == "gpu" for d in devices):
         local_rank = get_local_rank(COMM)
-        jax.config.set("jax_default_device", devices[local_rank])
+
         logger = logging.getLogger()
+
+        if COMM is None:
+            raise RuntimeError("Cannot initialize gpus local visibility without MPI.")
+
         logger.info(
-            f"Determined that rank {COMM.Get_rank()} will be using GPU[{local_rank}/{len(devices)}]"
+            f"Rank {COMM.Get_rank()}/{COMM.Get_size()} has local rank {local_rank} and "
+            f"will be using GPU[{local_rank}/{len(devices)}]"
         )
+        is_not_ok = local_rank >= len(devices)
+        if any(COMM.allgather(is_not_ok)):
+            print(
+                f"Some local rank is greater than the number of devices per rank ({len(devices)})."
+                "You might have a misconfigured number of rank per nodes (if on SLURM, did you specify"
+                "n_ranks_per_node correctly?)",
+                flush=True,
+            )
+            COMM.Barrier()
+            raise RuntimeError(
+                "Incorrect number of ranks per node: there are too many ranks on"
+                "some nodes and not enough GPUs!"
+            )
+
+        jax.config.update("jax_default_device", devices[local_rank])
 
 
 def get_local_rank(COMM: Optional["mpi4py.MPI.Intracomm"] = None, verbose=False) -> int:
@@ -60,9 +80,10 @@ def get_local_rank(COMM: Optional["mpi4py.MPI.Intracomm"] = None, verbose=False)
         return local_rank
     if COMM is not None:
         return get_local_rank_from_mpi4py(COMM, verbose=verbose)
+    raise RuntimeError("Cannot initialize local rank")
 
 
-def get_local_rank_from_env() -> Optional[int]:
+def get_local_rank_from_env() -> int | None:
     """
     Correct local rank from env variables set by some MPI implementations
     (notably OpenMPI)
@@ -92,7 +113,7 @@ def get_local_rank_from_env() -> Optional[int]:
 
 def get_local_rank_from_mpi4py(
     COMM: "mpi4py.MPI.Intracomm", verbose: bool = False
-) -> Optional[int]:
+) -> int:
     """
     Uses MPI4PY and a list of hostnames to find the correct local rank.
     """
@@ -111,7 +132,7 @@ def get_local_rank_from_mpi4py(
 
     if COMM.Get_rank() == 0:
         # Order all the hostnames, and find unique ones
-        unique_hosts = np.unique(all_hostnames)
+        unique_hosts = np.unique(all_hostnames)  # type: ignore
         # Numpy automatically sorts them.
     else:
         unique_hosts = None

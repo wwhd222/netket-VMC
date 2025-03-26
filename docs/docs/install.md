@@ -39,13 +39,13 @@ To get help, please open an issue pasting the output of `python -m netket.tools.
 
 ## GPU support
 
-If you want to run NetKet on a GPU, you must install a GPU-compatible {code}`jaxlib`, which is only supported on Linux and requires `CUDA>=11` and `cuDNN>=8.2`.
+If you want to run NetKet on a GPU, you must install a GPU-compatible {code}`jaxlib`, which is only supported on Linux and requires `CUDA>=12` and `cuDNN>=9.0`.
 We advise you to look at the instructions on [jax repository](https://github.com/google/jax#pip-installation-gpu-cuda) because they change from time to time.
 At the time of writing, installing a GPU version of jaxlib is as simple as running the following command, assuming you have very recent versions of `CUDA` and `cuDNN`.
 
 ```bash
 pip install --upgrade pip
-pip install --upgrade "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_releases.html
+pip install --upgrade "jax[cuda12]"
 ```
 
 Where the jaxlib version must correspond to the version of the existing CUDA installation you want to use. 
@@ -54,11 +54,11 @@ Refer to jax documentation to learn more about matching cuda versions with pytho
 ````{admonition} CUDA
 :class: warning
 
-Jax supports two ways to install the cuda-version: `cuda12_pip` and `cuda12_local`. The `_local` version will use the CUDA version installed by the user/cluster admins and pick it up through the `LD_LIBRARY_PATH`. You will need to have installed cuda, cudnn and some other dependencies. 
+Jax supports two ways to install the cuda-version: `cuda12` and `cuda12_local`. The `_local` version will use the CUDA version installed by the user/cluster admins and pick it up through the `LD_LIBRARY_PATH`. You will need to have installed cuda, cudnn and some other dependencies. 
 If you chose this approach, it is your responsability to ensure that the CUDA version is correct and all dependencies are present.
 **This approach is required if you wish to use MPI**.
 
-`_pip`, instead, will install a special CUDA version through `pip` in the current environment, and ignore the CUDA version that is installed system-wide. This approach is usually much simpler to use but **is not compatible with MPI on GPUS**. 
+`cuda12`, instead, will install a special CUDA version through `pip` in the current environment, and ignore the CUDA version that is installed system-wide. This approach is usually much simpler to use but **is not compatible with MPI on GPUS**. 
 
 Do note that if you install the `_pip` version, to switch to the `_local` version you must uninstall all nvidia-related dependencies. To do so, the simplest way is to simply delete the environment and start from scratch. If you don't want to do so, you may try to use the following command, but it might not work perfectly
 
@@ -112,9 +112,9 @@ See {ref}`this block <warn-mpi-sampling>` to understand how NetKet behaves under
 ````{admonition} CUDA
 :class: warning
 
-If you wish to use multi-GPU setups through MPI, you **must** install jax as `'jax[cuda12_local]'` and cannot use the `'jax[cuda12_pip]'` variant. 
+If you wish to use multi-GPU setups through MPI, you **must** install jax as `'jax[cuda12_local]'` and cannot use the `'jax[cuda12]'` variant. 
 
-This is because `cuda12_pip` installs CUDA through pip, which does not include the nvidia compiler `nvcc`, which in turn it is needed to install `mpi4jax`. If, for any reason, you already have `nvcc` but are using `cuda12_pip`, installation might not fail but you will get an error due to version mismatch of cuda versions at runtime.
+This is because `cuda12` installs CUDA through pip, which does not include the nvidia compiler `nvcc`, which in turn it is needed to install `mpi4jax`. If, for any reason, you already have `nvcc` but are using `cuda12`, installation might not fail but you will get an error due to version mismatch of cuda versions at runtime.
 
 ````
 
@@ -125,19 +125,16 @@ This is because `cuda12_pip` installs CUDA through pip, which does not include t
 Conda is a great package manager as long as it works. 
 But when it does not, it's a pain.
 
-To install NetKet using conda, simply run
+NetKet is not supported if installed through Conda. 
+You should install it through `pip` and that's it.
+
+Running the well-known command below
 
 ```bash
 conda install -c conda-forge netket
 ```
 
-This will also install the conda MPI compilers and the MPI-related dependencies. 
-This often creates problems if you also have a system MPI. 
-Moreover, you should never use conda's MPI on a supercomputing cluster.
-
-In general, we advise against using conda or conda environments to install NetKet unless someone is pointing a gun at you.
-If you don't want to die from that bullet, but would rather loose your mental sanity fighting conda, do expect weird setup errors.
-
+will apaprently work, but we are no longer supporting the netket version installed through it so weird errors might appear.
 
 ## Introduction
 
@@ -202,6 +199,8 @@ See the [Operators](operator.md) documentation for more information.
 ma = nk.models.RBM(alpha=1, param_dtype=float)
 
 sa = nk.sampler.MetropolisLocal(hi, n_chains=16)
+
+vstate = nk.vqs.MCState(sa, ma, n_samples=1008, n_discard_per_chain=10)
 ```
 
 Then, one must chose the model to use as a Neural Quantum State. Netket provides
@@ -224,6 +223,9 @@ Samples don't need double precision at all, so it makes sense to use the lower
 precision, but you have to be careful with the dtype of your model in order
 not to reduce the precision.
 
+Having defined the model and the sampler, we construct a [Monte Carlo Variational State](varstate.md) which encapsulates both the parameterized state and the way to probe it (e.g. using a specific sampler to estimate the relevant observables).
+NetKet also supports other types of variational states, such as the Full Summation state, which compute quantities without sampling.
+
 ```python
 # Optimizer
 op = nk.optimizer.Sgd(learning_rate=0.01)
@@ -233,7 +235,7 @@ You can then chose an optimizer from the [optimizer](netket_optimizer_api) submo
 
 ```python
 # Variational monte carlo driver
-gs = nk.VMC(ha, op, sa, ma, n_samples=1000, n_discard_per_chain=100)
+gs = nk.VMC(ha, op, variational_state=vstate)
 
 gs.run(n_iter=300, out=None)
 ```
@@ -241,7 +243,7 @@ gs.run(n_iter=300, out=None)
 Once you have all the pieces together, you can construct a variational monte
 carlo optimisation driver by passing the constructor the hamiltonian and the
 optimizer (which must always be the first two arguments), and then the
-sampler, machine and various options.
+variational state and various options.
 
 Once that is done, you can run the simulation by calling the {meth}`~nk.driver.VMC.run` method in the driver, specifying the output loggers and the number of iterations in
 the optimisation.

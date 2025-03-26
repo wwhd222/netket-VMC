@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 import jax
 from jax import numpy as jnp
@@ -21,12 +20,11 @@ from flax import serialization
 
 import netket
 from netket import jax as nkjax
+from netket.hilbert import DiscreteHilbert
 from netket.sampler import Sampler
 from netket.stats import Stats
 from netket.utils.types import PyTree
 from netket.operator import AbstractOperator
-
-from netket.jax.sharding import extract_replicated
 
 from netket.vqs import VariationalMixedState
 
@@ -50,12 +48,12 @@ class MCMixedState(VariationalMixedState, MCState):
         sampler,
         model=None,
         *,
-        sampler_diag: Optional[Sampler] = None,
-        n_samples_diag: Optional[int] = None,
-        n_samples_per_rank_diag: Optional[int] = None,
-        n_discard_per_chain_diag: Optional[int] = None,
+        sampler_diag: Sampler | None = None,
+        n_samples_diag: int | None = None,
+        n_samples_per_rank_diag: int | None = None,
+        n_discard_per_chain_diag: int | None = None,
         seed=None,
-        sampler_seed: Optional[int] = None,
+        sampler_seed: int | None = None,
         variables=None,
         **kwargs,
     ):
@@ -186,7 +184,7 @@ class MCMixedState(VariationalMixedState, MCState):
         return self.diagonal.n_discard_per_chain
 
     @n_discard_per_chain_diag.setter
-    def n_discard_per_chain_diag(self, n_discard_per_chain: Optional[int]):
+    def n_discard_per_chain_diag(self, n_discard_per_chain: int | None):
         self.diagonal.n_discard_per_chain = n_discard_per_chain
 
     @MCState.parameters.setter
@@ -211,8 +209,11 @@ class MCMixedState(VariationalMixedState, MCState):
     ) -> tuple[Stats, PyTree]:
         raise NotImplementedError
 
-    def to_matrix(self, normalize: bool = True) -> jnp.ndarray:
-        return netket.nn.to_matrix(
+    def to_matrix(self, normalize: bool = True) -> jax.Array:
+        if not isinstance(self.hilbert, DiscreteHilbert):
+            raise TypeError("Cannot convert to array a non-discrete Hilbert space.")
+
+        return netket.nn.to_matrix(  # type: ignore[return-value]
             self.hilbert,
             self._apply_fun,
             self.variables,
@@ -249,7 +250,7 @@ class MCMixedState(VariationalMixedState, MCState):
 
 def serialize_MCMixedState(vstate):
     state_dict = {
-        "variables": serialization.to_state_dict(extract_replicated(vstate.variables)),
+        "variables": serialization.to_state_dict(vstate.variables),
         "sampler_state": serialization.to_state_dict(vstate._sampler_state_previous),
         "diagonal": serialization.to_state_dict(vstate.diagonal),
         "n_samples": vstate.n_samples,
@@ -270,8 +271,9 @@ def deserialize_MCMixedState(vstate, state_dict):
         vstate._diagonal, state_dict["diagonal"]
     )
 
-    new_vstate.variables = serialization.from_state_dict(
-        vstate.variables, state_dict["variables"]
+    new_vstate.variables = jax.tree_util.tree_map(
+        jnp.asarray,
+        serialization.from_state_dict(vstate.variables, state_dict["variables"]),
     )
     new_vstate.sampler_state = serialization.from_state_dict(
         vstate.sampler_state, state_dict["sampler_state"]

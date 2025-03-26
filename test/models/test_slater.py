@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import netket as nk
 import netket.experimental as nkx
 import numpy as np
 import jax
@@ -29,7 +30,7 @@ def test_Slater2nd():
         nkx.models.Slater2nd,
         partial(nkx.models.MultiSlater2nd, n_determinants=n_dets),
     ]:
-        hi = nkx.hilbert.SpinOrbitalFermions(3, n_fermions=2)
+        hi = nk.hilbert.SpinOrbitalFermions(3, n_fermions=2)
         ma = slater_class(hi, restricted=True, param_dtype=jnp.float32)
 
         pars = ma.init(k, hi.all_states())
@@ -43,7 +44,7 @@ def test_Slater2nd():
         assert out1.shape == (2, 3)
         assert out1.dtype == jnp.complex64
 
-        hi = nkx.hilbert.SpinOrbitalFermions(3, s=0.5, n_fermions_per_spin=(2, 2))
+        hi = nk.hilbert.SpinOrbitalFermions(3, s=0.5, n_fermions_per_spin=(2, 2))
         ma = slater_class(hi, restricted=True, param_dtype=jnp.float32)
 
         pars = ma.init(k, hi.all_states())
@@ -62,7 +63,22 @@ def test_Slater2nd():
         x2 = jnp.array([1, 1, 0, 0, 1, 1])  # (0,1,1) (1,1,0)
         np.testing.assert_allclose(ma.apply(pars, x1), ma.apply(pars, x2))
 
-        hi = nkx.hilbert.SpinOrbitalFermions(3, s=0.5, n_fermions_per_spin=(2, 2))
+        # higher spin check
+        hi = nk.hilbert.SpinOrbitalFermions(2, s=1.5, n_fermions_per_spin=(1, 1, 1, 1))
+        ma = slater_class(hi, restricted=True, param_dtype=jnp.float32)
+
+        pars = ma.init(k, hi.all_states())
+        out0 = ma.apply(pars, hi.numbers_to_states(0))
+        assert out0.shape == ()
+
+        out1 = ma.apply(pars, hi.numbers_to_states([0, 1, 2]))
+        assert out1.shape == (3,)
+
+        out1 = ma.apply(pars, hi.random_state(k, (2, 3), dtype=jnp.float32))
+        assert out1.shape == (2, 3)
+        assert out1.dtype == jnp.complex64
+
+        hi = nk.hilbert.SpinOrbitalFermions(3, s=0.5, n_fermions_per_spin=(2, 2))
         ma = slater_class(hi, restricted=False, param_dtype=jnp.float32)
 
         pars = ma.init(k, hi.all_states())
@@ -81,11 +97,11 @@ def test_Slater2nd():
         x2 = jnp.array([1, 1, 0, 0, 1, 1])  # (0,1,1) (1,1,0)
         assert not np.allclose(ma.apply(pars, x1), ma.apply(pars, x2))
 
-        hi = nkx.hilbert.SpinOrbitalFermions(3, n_fermions=2)
+        hi = nk.hilbert.SpinOrbitalFermions(3, n_fermions=2)
         ma = slater_class(hi, restricted=False, param_dtype=jnp.float32)
 
         # check generalized
-        hi = nkx.hilbert.SpinOrbitalFermions(3, s=0.5, n_fermions_per_spin=(2, 2))
+        hi = nk.hilbert.SpinOrbitalFermions(3, s=0.5, n_fermions_per_spin=(2, 2))
         ma = slater_class(hi, generalized=True, param_dtype=jnp.float32)
 
         pars = ma.init(k, hi.all_states())
@@ -110,16 +126,16 @@ def test_Slater2nd():
 def test_Slater2nd_error():
     # Requires number of fermions
     with pytest.raises(TypeError):
-        hi = nkx.hilbert.SpinOrbitalFermions(3)
+        hi = nk.hilbert.SpinOrbitalFermions(3)
         ma = nkx.models.Slater2nd(hi, restricted=True)
 
     # Requires equal number of fermions
     with pytest.raises(ValueError):
-        hi = nkx.hilbert.SpinOrbitalFermions(3, s=0.5, n_fermions_per_spin=(2, 3))
+        hi = nk.hilbert.SpinOrbitalFermions(3, s=0.5, n_fermions_per_spin=(2, 3))
         ma = nkx.models.Slater2nd(hi, restricted=True)
 
     # Wrong sample shape
     with pytest.raises(ValueError):
-        hi = nkx.hilbert.SpinOrbitalFermions(3, s=0.5, n_fermions_per_spin=(2, 2))
+        hi = nk.hilbert.SpinOrbitalFermions(3, s=0.5, n_fermions_per_spin=(2, 2))
         ma = nkx.models.Slater2nd(hi, restricted=True)
         ma.init(jax.random.PRNGKey(1), jnp.ones((4,)))

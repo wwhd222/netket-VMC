@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Union
+from typing import Optional
 
 import numpy as np
 
@@ -38,7 +38,7 @@ class Qubit(HomogeneousHilbert):
             >>> print(hi.size)
             100
         """
-        super().__init__(StaticRange(0, 1, 2, dtype=np.int8), N)
+        super().__init__(StaticRange(0, 1, 2, dtype=np.int8), N)  # type: ignore[arg-type]
 
     def __pow__(self, n):
         return Qubit(self.size * n)
@@ -47,7 +47,7 @@ class Qubit(HomogeneousHilbert):
         assert type(self) == type(other)
         return Qubit(self.size + other.size)
 
-    def ptrace(self, sites: Union[int, list]) -> Optional["Qubit"]:
+    def ptrace(self, sites: int | list) -> Optional["Qubit"]:
         if isinstance(sites, int):
             sites = [sites]
 

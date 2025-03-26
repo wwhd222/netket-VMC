@@ -12,16 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 import jax
 import jax.numpy as jnp
 from jax.scipy.special import logsumexp
 
+from netket.utils.types import Array
+
 from ._utils_dtype import dtype_complex
 
 
-def logsumexp_cplx(a: jax.Array, b: Optional[jax.Array] = None, **kwargs) -> jax.Array:
+def logsumexp_cplx(a: Array, b: Array | None = None, **kwargs) -> jax.Array:
     """Compute the log of the sum of exponentials of input elements, always returning a
     complex number.
 
@@ -43,7 +44,7 @@ def logsumexp_cplx(a: jax.Array, b: Optional[jax.Array] = None, **kwargs) -> jax
         return a
 
 
-def logdet_cmplx(A: jax.Array) -> jax.Array:
+def logdet_cmplx(A: Array) -> jax.Array:
     r"""Log-determinant, with automatic upconversion to a complex
     output dtype in order to encode the sign.
 

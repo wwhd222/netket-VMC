@@ -56,15 +56,7 @@ They are experimental, meaning that we could change them at some point, and we a
 
 ### Parallel tempering samplers
 
-This module contains the Metropolis Parallel Tempered sampler.
-This sampler is experimental because we believe it to be correct, but our tests
-fail. We believe it to be a false negative: possibly the implementation of the
-sampler is correct, but the test is too tight.
-Until we will have verified this hypothesis and updated the tests in order not
-to fail, we provide the current implementation as-is, in the hope that some
-contributor might take up that work.
-
-The other experimental sampler is MetropolisSamplerPmap, which makes use of {func}`jax.pmap`
+An experimental sampler is MetropolisSamplerPmap, which makes use of {func}`jax.pmap`
 to use different GPUs/CPUs without having to use MPI. It should scale much better over
 several CPUs, but you have to start jax with a specific environment variable.
 
@@ -75,36 +67,27 @@ several CPUs, but you have to start jax with a specific environment variable.
    :template: class
    :nosignatures:
 
-   sampler.MetropolisPtSampler
-   sampler.MetropolisLocalPt
-   sampler.MetropolisExchangePt
-
    sampler.MetropolisSamplerPmap
 ```
 
-### Particle-specific samplers
+(experimental-fermions-api)=
+## Fermions and PyScf
 
-The following samplers are for 2nd-quantisation fermionic hilbert spaces ({class}`netket.experimental.hilbert.SpinOrbitalFermions`).
+This modules contains some utility functions that are used to create hamiltonians directly from some PyScf molecules. 
+Previously we also had several Fermionic functionality in the experimental namespace, but in May 2024 they were stabilised and moved to the main netket namespace.
 
 ```{eval-rst}
-.. autosummary::
-   :toctree: _generated/samplers
-   :template: flax_module_or_default
-   :nosignatures:
-
-
-   sampler.MetropolisParticleExchange
+.. currentmodule:: netket.experimental
 ```
 
-And the corresponding rules
 ```{eval-rst}
 .. autosummary::
-   :toctree: _generated/samplers
-   :template: flax_module_or_default
-   :nosignatures:
+    :toctree: _generated/operator
+    :template: class
+    :nosignatures:
 
-
-   sampler.rules.ParticleExchangeRule
+    operator.from_pyscf_molecule
+    operator.pyscf.TV_from_pyscf_molecule
 ```
 
 (experimental-logging-api)=
@@ -162,7 +145,8 @@ This module contains experimental loggers that can be used with the optimization
 
 ## ODE Integrators
 
-This is a collection of ODE integrators that can be used with the TDVP driver above.
+### Concrete solvers
+This is a collection of ODE solvers that can be used with the TDVP driver above.
 
 ```{eval-rst}
 .. currentmodule:: netket.experimental
@@ -181,38 +165,25 @@ This is a collection of ODE integrators that can be used with the TDVP driver ab
    dynamics.RK4
    dynamics.RK45
 ```
+The corresponding integrator is then automatically constructed within the TDVP driver. 
 
-## Fermions
 
-This modules contains hilbert space and operator implementations of fermions in second quantization.
-It is experimental until it has been thoroughly tested by the community, meaning feedback is welcome.
-
+### Abstract classes 
+Those are the abstract classes you can inherit from to implement your own solver
 ```{eval-rst}
 .. currentmodule:: netket.experimental
 ```
 
 ```{eval-rst}
 .. autosummary::
-   :toctree: _generated/hilbert
+   :toctree: _generated/experimental/dynamics
    :template: class
    :nosignatures:
 
-   hilbert.SpinOrbitalFermions
+   dynamics.AbstractSolver
+   dynamics.AbstractSolverState
 ```
 
-```{eval-rst}
-.. autosummary::
-   :toctree: _generated/operator
-   :template: class
-   :nosignatures:
-
-   operator.FermionOperator2nd
-   operator.fermion.create
-   operator.fermion.destroy
-   operator.fermion.number
-   operator.from_pyscf_molecule
-   operator.pyscf.TV_from_pyscf_molecule
-```
 
 ## Observables
 This module contains various observables that can be computed starting from various variational states.
@@ -224,4 +195,5 @@ This module contains various observables that can be computed starting from vari
    :nosignatures:
 
    observable.Renyi2EntanglementEntropy
+   observable.VarianceObservable
 ```

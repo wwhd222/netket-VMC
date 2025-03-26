@@ -1,6 +1,9 @@
 from typing import Generic, TypeVar
 
+import numpy as np
+
 import jax
+import jax.numpy as jnp
 import pytest
 from flax import serialization
 
@@ -254,6 +257,33 @@ class TestPytree:
 
         assert leaves1 == leaves2
 
+    def test_default(self):
+        class Foo(Pytree):
+            a: int
+            b: int = static_field(default=2)
+            c: int = static_field(default_factory=lambda: "ciao")
+
+            def __init__(self, a, b=None):
+                self.a = a
+                if b is not None:
+                    self.b = b
+
+        module = Foo(a=1)
+        assert module.a == 1
+        assert module.b == 2
+        assert module.c == "ciao"
+
+        module = Foo(a=1, b=3)
+        assert module.a == 1
+        assert module.b == 3
+        assert module.c == "ciao"
+
+        @jax.jit
+        def f(m: Foo):
+            return m.a + m.b
+
+        assert f(module) == 4
+
 
 class TestMutablePytree:
     def test_pytree(self):
@@ -366,3 +396,21 @@ class TestMutablePytree:
         assert b.z == 5
 
         assert jax.tree_util.tree_leaves(b) == [2, 5]
+
+
+def test_serialize_unwraps_keys():
+    @dataclass
+    class TreeWithKey(Pytree):
+        a: jax.Array
+        b: jax.Array
+
+    obj = TreeWithKey(jax.random.key(1), jax.random.PRNGKey(2))
+
+    bts = serialization.to_bytes(obj)
+
+    obj_target = TreeWithKey(jax.random.key(0), jax.random.PRNGKey(2))
+    obj_load = serialization.from_bytes(obj_target, bts)
+    assert jnp.issubdtype(obj_load.a.dtype, jax.dtypes.prng_key)
+    assert np.all(jax.random.key_data(obj.a) == jax.random.key_data(obj_load.a))
+    assert not jnp.issubdtype(obj_load.b.dtype, jax.dtypes.prng_key)
+    assert np.all(obj.b == obj_load.b)

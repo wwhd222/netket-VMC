@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, Union
+from collections.abc import Callable
 from functools import partial
 
 import jax
 
 import netket as nk
+from netket.jax import tree_cast
 from netket.operator import AbstractOperator
 from netket.optimizer import LinearOperator
 from netket.optimizer.qgt import QGTAuto
@@ -27,9 +28,7 @@ from netket.vqs import (
     MCState,
     FullSumState,
 )
-from netket.jax import tree_cast
-
-from netket.experimental.dynamics import RKIntegratorConfig
+from netket.experimental.dynamics import AbstractSolver
 
 from .tdvp_common import TDVPBaseDriver, odefun
 
@@ -39,29 +38,23 @@ class TDVP(TDVPBaseDriver):
     Variational time evolution based on the time-dependent variational principle which,
     when used with Monte Carlo sampling via :class:`netket.vqs.MCState`, is the time-dependent VMC
     (t-VMC) method.
-
-    .. note::
-        This TDVP Driver uses the time-integrators from the `nkx.dynamics` module, which are
-        automatically executed under a `jax.jit` context.
-
-        When running computations on GPU, this can lead to infinite hangs or extremely long
-        compilation times. In those cases, you might try setting the configuration variable
-        `nk.config.netket_experimental_disable_ode_jit = True` to mitigate those issues.
-
     """
 
     def __init__(
         self,
         operator: AbstractOperator,
         variational_state: VariationalState,
-        integrator: RKIntegratorConfig,
+        # TODO: remove default None once `integrator` is removed
+        ode_solver: AbstractSolver = None,
         *,
         t0: float = 0.0,
         propagation_type: str = "real",
+        # TODO: integrator deprecated in 3.16 (oct/nov 2024)
+        integrator: AbstractSolver = None,
         qgt: LinearOperator = None,
         linear_solver=nk.optimizer.solver.pinv_smooth,
         linear_solver_restart: bool = False,
-        error_norm: Union[str, Callable] = "euclidean",
+        error_norm: str | Callable = "euclidean",
     ):
         r"""
         Initializes the time evolution driver.
@@ -70,7 +63,7 @@ class TDVP(TDVPBaseDriver):
             operator: The generator of the dynamics (Hamiltonian for pure states,
                 Lindbladian for density operators).
             variational_state: The variational state.
-            integrator: Configuration of the algorithm used for solving the ODE.
+            ode_solver: Solving algorithm used the ODE.
             t0: Initial time at the start of the time evolution.
             propagation_type: Determines the equation of motion: "real"  for the
                 real-time Schrödinger equation (SE), "imag" for the imaginary-time SE.
@@ -121,13 +114,18 @@ class TDVP(TDVPBaseDriver):
         self.linear_solver_restart = linear_solver_restart
 
         super().__init__(
-            operator, variational_state, integrator, t0=t0, error_norm=error_norm
+            operator,
+            variational_state,
+            ode_solver,
+            t0=t0,
+            error_norm=error_norm,
+            integrator=integrator,
         )
 
 
 @odefun.dispatch
 def odefun_tdvp(  # noqa: F811
-    state: Union[MCState, FullSumState], driver: TDVP, t, w, *, stage=0
+    state: MCState | FullSumState, driver: TDVP, t, w, *, stage=0
 ):
     # pylint: disable=protected-access
 

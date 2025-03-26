@@ -12,153 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Union
-from functools import partial
 
 import jax
 from jax import numpy as jnp
 from flax import struct
 
 from netket.utils.types import Scalar, PyTree
-from netket.utils import mpi, timing
-import netket.jax as nkjax
-from netket.nn import split_array_mpi
+from netket.utils import mpi
+from netket import jax as nkjax
 
 from ..linear_operator import LinearOperator, Uninitialized
 
 from .common import check_valid_vector_type
-from .qgt_jacobian_common import (
-    sanitize_diag_shift,
-    to_shift_offset,
-    rescale,
-)
-
-
-@timing.timed
-def QGTJacobianDense(
-    vstate=None,
-    *,
-    mode: Optional[str] = None,
-    holomorphic: Optional[bool] = None,
-    diag_shift=None,
-    diag_scale=None,
-    rescale_shift=None,
-    chunk_size=None,
-    **kwargs,
-) -> "QGTJacobianDenseT":
-    """
-    Semi-lazy representation of an S Matrix where the Jacobian O_k is precomputed
-    and stored as a dense matrix.
-
-    The matrix of gradients O is computed on initialisation, but not S,
-    which can be computed by calling :code:`to_dense`.
-    The details on how the ⟨S⟩⁻¹⟨F⟩ system is solved are contained in
-    the field `sr`.
-
-    Numerical estimates of the QGT are usually ill-conditioned and require
-    regularisation. The standard approach is to add a positive constant to the diagonal;
-    alternatively, Becca and Sorella (2017) propose scaling this offset with the
-    diagonal entry itself. NetKet allows using both in tandem:
-
-    .. math::
-
-        S_{ii} \\mapsto S_{ii} + \\epsilon_1 S_{ii} + \\epsilon_2;
-
-    :math:`\\epsilon_{1,2}` are specified using `diag_scale` and `diag_shift`,
-    respectively.
-
-    Args:
-        vstate: The variational state
-        mode: "real", "complex" or "holomorphic": specifies the implementation
-              used to compute the jacobian. "real" discards the imaginary part
-              of the output of the model. "complex" splits the real and imaginary
-              part of the parameters and output. It works also for non holomorphic
-              models. holomorphic works for any function assuming it's holomorphic
-              or real valued.
-        holomorphic: a flag to indicate that the function is holomorphic.
-        diag_scale: Fractional shift :math:`\\epsilon_1` added to diagonal entries (see above).
-        diag_shift: Constant shift :math:`\\epsilon_2` added to diagonal entries (see above).
-        chunk_size: If supplied, overrides the chunk size of the variational state
-                    (useful for models where the backward pass requires more
-                    memory than the forward pass).
-    """
-    if mode is not None and holomorphic is not None:
-        raise ValueError("Cannot specify both `mode` and `holomorphic`.")
-    if rescale_shift is not None and diag_scale is not None:
-        raise ValueError("Cannot specify both `rescale_shift` and `diag_scale`.")
-
-    if vstate is None:
-        return partial(
-            QGTJacobianDense,
-            mode=mode,
-            holomorphic=holomorphic,
-            chunk_size=chunk_size,
-            diag_shift=diag_shift,
-            diag_scale=diag_scale,
-            rescale_shift=rescale_shift,
-            **kwargs,
-        )
-
-    diag_shift, diag_scale = sanitize_diag_shift(diag_shift, diag_scale, rescale_shift)
-
-    # TODO: Find a better way to handle this case
-    from netket.vqs import FullSumState
-
-    if isinstance(vstate, FullSumState):
-        samples = split_array_mpi(vstate._all_states)
-        pdf = split_array_mpi(vstate.probability_distribution())
-    else:
-        samples = vstate.samples
-        if samples.ndim >= 3:
-            # use jit so that we can do it on global shared array
-            samples = jax.jit(jax.lax.collapse, static_argnums=(1, 2))(samples, 0, 2)
-        pdf = None
-
-    if mode is None:
-        mode = nkjax.jacobian_default_mode(
-            vstate._apply_fun,
-            vstate.parameters,
-            vstate.model_state,
-            samples,
-            holomorphic=holomorphic,
-        )
-
-    if chunk_size is None and hasattr(vstate, "chunk_size"):
-        chunk_size = vstate.chunk_size
-
-    shift, offset = to_shift_offset(diag_shift, diag_scale)
-
-    jacobians = nkjax.jacobian(
-        vstate._apply_fun,
-        vstate.parameters,
-        samples,
-        vstate.model_state,
-        mode=mode,
-        pdf=pdf,
-        chunk_size=chunk_size,
-        dense=True,
-        center=True,
-        _sqrt_rescale=True,
-    )
-
-    if offset is not None:
-        ndims = 1 if mode != "complex" else 2
-        jacobians, scale = rescale(jacobians, offset, ndims=ndims)
-    else:
-        scale = None
-
-    pars_struct = jax.tree_util.tree_map(
-        lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype), vstate.parameters
-    )
-
-    return QGTJacobianDenseT(
-        O=jacobians,
-        scale=scale,
-        mode=mode,
-        _params_structure=pars_struct,
-        diag_shift=shift,
-        **kwargs,
-    )
 
 
 @struct.dataclass
@@ -180,7 +45,7 @@ class QGTJacobianDenseT(LinearOperator):
     If scale is not None, columns normalised to unit norm
     """
 
-    scale: Optional[jnp.ndarray] = None
+    scale: jnp.ndarray | None = None
     """If not None, contains 2-norm of each column of the gradient matrix,
     i.e., the sqrt of the diagonal elements of the S matrix
     """
@@ -191,6 +56,8 @@ class QGTJacobianDenseT(LinearOperator):
                   into real and imaginary part.
         - "complex": for complex-valued R->C and C->C Ansätze, splits the complex
                   inputs and outputs into real and imaginary part
+        - "imag": For the imaginary part of the QGT. Solve in this case builds the
+                  purely imaginary hermitian matrix to solve the linear system.
         - "holomorphic": for any Ansätze. Does not split complex values.
         - "auto": autoselect real or complex.
     """
@@ -202,10 +69,12 @@ class QGTJacobianDenseT(LinearOperator):
     _params_structure: PyTree = struct.field(pytree_node=False, default=Uninitialized)
 
     @jax.jit
-    def __matmul__(self, vec: Union[PyTree, jnp.ndarray]) -> Union[PyTree, jnp.ndarray]:
+    def __matmul__(self, vec: PyTree | jnp.ndarray) -> PyTree | jnp.ndarray:
         if not hasattr(vec, "ndim") and not self._in_solve:
             check_valid_vector_type(self._params_structure, vec)
 
+        # When we do matrix multiplication, we convert the input vector to
+        # the dense format used by the QGTJacobian. If we are using
         vec, reassemble = convert_tree_to_dense_format(
             vec, self.mode, disable=self._in_solve
         )
@@ -213,7 +82,7 @@ class QGTJacobianDenseT(LinearOperator):
         if self.scale is not None:
             vec = vec * self.scale
 
-        result = mat_vec(vec, self.O, self.diag_shift)
+        result = mat_vec(vec, self.O, self.diag_shift, imag=(self.mode == "imag"))
 
         if self.scale is not None:
             result = result * self.scale
@@ -221,7 +90,7 @@ class QGTJacobianDenseT(LinearOperator):
         return reassemble(result)
 
     @jax.jit
-    def _solve(self, solve_fun, y: PyTree, *, x0: Optional[PyTree] = None) -> PyTree:
+    def _solve(self, solve_fun, y: PyTree, *, x0: PyTree | None = None) -> PyTree:
         if not hasattr(y, "ndim"):
             check_valid_vector_type(self._params_structure, y)
 
@@ -239,7 +108,23 @@ class QGTJacobianDenseT(LinearOperator):
         # but avoid rescaling, we pass down an object with
         # scale = None
         unscaled_self = self.replace(scale=None, _in_solve=True)
-        out, info = solve_fun(unscaled_self, y, x0=x0)
+        if self.mode == "imag":
+            # If we want to solve the linear system IM(G)x=vec,
+            # the G matrix is hermitian so its imaginary part is skew-simmetric
+            # and has purely imaginary eigenvalues. This is extemely unstable
+            # numerically, so we instead solve the problem
+            # i Im(G) x = i Vec, such that the matrix becomes hermitian and the
+            # solving algorithm are more stable.
+            # Then, we take the real part of the solution.
+            #
+            # To multiply Im(G) by i, as Im(G) = Oₗ† Oᵣ , I can multiply
+            # O by √i
+            #
+            unscaled_self = unscaled_self.replace(O=unscaled_self.O * jnp.sqrt(1j))
+            out, info = solve_fun(unscaled_self, 1j * y, x0=x0)
+            out = out.real
+        else:
+            out, info = solve_fun(unscaled_self, y, x0=x0)
 
         if self.scale is not None:
             out = out / self.scale
@@ -262,8 +147,92 @@ class QGTJacobianDenseT(LinearOperator):
             diag = jnp.diag(self.scale**2)
 
         # concatenate samples with real/Imaginary dimension
-        O = O.reshape(-1, O.shape[-1])
-        return mpi.mpi_sum_jax(O.conj().T @ O)[0] + self.diag_shift * diag
+        if self.mode == "imag":
+            # Equivalent to Jr.T@Ji - Ji.T@Jr
+            flip_sign = jnp.array([1, -1]).reshape(1, 2, 1)
+            Ol = (flip_sign * O).reshape(-1, O.shape[-1])
+            Or = jnp.flip(O, axis=1).reshape(-1, O.shape[-1])
+            return mpi.mpi_sum_jax(Ol.T @ Or)[0] + self.diag_shift * diag
+        else:
+            # Equivalent to Jr.T@Jr + Ji.T@Ji
+            O = O.reshape(-1, O.shape[-1])
+            return mpi.mpi_sum_jax(O.conj().T @ O)[0] + self.diag_shift * diag
+
+    def to_real_part(self) -> "QGTJacobianDenseT":
+        """
+        Returns the operator computing real part of the complex, non holomorphic QGT.
+
+        The real part of the QGT is used in the Stochastic Reconfiguration (SR)
+        algorithm as well as in the McLachlan Variational Principles used to simulate
+        Quantum Dynamics.
+        See Table 1 in `"Theory of Variational Quantum Simulation" by Yuan et al.
+        <https://arxiv.org/pdf/1812.08767>`_ for more details.
+
+
+        .. note::
+
+            This function can only be called on the non-holomorphic QGT.
+
+        .. note::
+
+            The returned object is another :code:`QGTJacobian***` object.
+
+            NetKet does not currently implement the *full* complex QGT object
+            for non-holomorphic functions, instead you need to keep on hand
+            the two separate terms obtained by calling
+            :meth:`~netket.optimizer.qgt.QGTJacobianDenseT.to_real_part` and
+            :meth:`~netket.optimizer.qgt.QGTJacobianDenseT.to_imag_part`.
+
+        See also :meth:`~netket.optimizer.qgt.QGTJacobianDenseT.to_imag_part`.
+        """
+        if self.mode == "imag":
+            return self.replace(mode="complex")
+        elif self.mode == "complex":
+            return self
+        elif self.mode == "real":
+            return self
+        else:
+            raise ValueError(
+                "Can only convert to real part the imaginary part of the"
+                "QGT, not the holomorphic or sign-less one."
+            )
+
+    def to_imag_part(self) -> "QGTJacobianDenseT":
+        """
+        Returns the operator computing imaginary part of the complex, non holomorphic QGT.
+
+        The imaginary part of the QGT is necessary to implement the TDVP variational
+        principle for the quantum dynamics.
+        See Table 1 in `"Theory of Variational Quantum Simulation" by Yuan et al.
+        <https://arxiv.org/pdf/1812.08767>`_ for more details.
+
+        .. note::
+
+            This function can only be called on the non-holomorphic QGTs
+            of a complex-valued wave-function.
+
+        .. note::
+
+            The returned object is another :code:`QGTJacobian***` object.
+
+            NetKet does not currently implement the *full* complex QGT object
+            for non-holomorphic functions, instead you need to keep on hand
+            the two separate terms obtained by calling
+            :meth:`~netket.optimizer.qgt.QGTJacobianDenseT.to_real_part` and
+            :meth:`~netket.optimizer.qgt.QGTJacobianDenseT.to_imag_part`.
+
+        See also :meth:`~netket.optimizer.qgt.QGTJacobianDenseT.to_real_part`.
+        """
+
+        if self.mode == "complex":
+            return self.replace(mode="imag")
+        elif self.mode == "imag":
+            return self
+        else:
+            raise ValueError(
+                "Can only convert to imaginary part the real part of the"
+                "QGT, not the holomorphic or sign-less one."
+            )
 
     def __repr__(self):
         return (
@@ -277,10 +246,26 @@ class QGTJacobianDenseT(LinearOperator):
 #################################################
 
 
-def mat_vec(v: PyTree, O: PyTree, diag_shift: Scalar) -> PyTree:
-    w = O @ v
-    res = jnp.tensordot(w.conj(), O, axes=w.ndim).conj()
-    return mpi.mpi_sum_jax(res)[0] + diag_shift * v
+def mat_vec(v: PyTree, O: PyTree, diag_shift: Scalar, imag: bool = False) -> PyTree:
+    if not imag:
+        # Matrix vector product of the (real part, or holomorphic) QGT matrix
+        # with a vector. In the standard case, it does the multiplication equivalent
+        # to J_r.T@(J_r@v_r) + J_i.T@(J_i@v_i) + diag_shift*v
+        w = O @ v
+        res = jnp.tensordot(w.conj(), O, axes=w.ndim).conj()
+        return mpi.mpi_sum_jax(res)[0] + diag_shift * v
+    else:
+        # Matrix vector product of the imaginary part of the QGT matrix
+        # with a vector. This is equivalent to
+        # J_r.T@(J_i@v_i) - J_i.T@(J_r@v_r) + diag_shift*v
+
+        Or = jnp.flip(O, axis=1).reshape(-1, O.shape[-1])
+        w = Or @ v
+
+        flip_sign = jnp.array([1, -1]).reshape(1, 2, 1)
+        Ol = (flip_sign * O).reshape(-1, O.shape[-1])
+        res = jnp.tensordot(w.conj(), Ol, axes=w.ndim).conj()
+        return mpi.mpi_sum_jax(res)[0] + diag_shift * v
 
 
 def convert_tree_to_dense_format(vec, mode, *, disable=False):

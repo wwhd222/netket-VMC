@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, Union, Optional
+from collections.abc import Callable
 
 from functools import partial
 
@@ -26,8 +26,7 @@ from netket.optimizer.qgt.qgt_jacobian_dense import convert_tree_to_dense_format
 from netket.vqs import VariationalState, VariationalMixedState, MCState
 from netket.jax import tree_cast
 from netket.utils import timing
-
-from netket.experimental.dynamics import RKIntegratorConfig
+from netket.experimental.dynamics import AbstractSolver
 
 
 from .tdvp_common import TDVPBaseDriver, odefun
@@ -89,30 +88,23 @@ class TDVPSchmitt(TDVPBaseDriver):
     :math:`\rho_k=V_{k,k'}^{\dagger}F_{k'}` (see
     `[arXiv:1912.08828] <https://arxiv.org/pdf/1912.08828.pdf>`_ for details).
 
-
-    .. note::
-
-        This TDVP Driver uses the time-integrators from the `nkx.dynamics` module, which are
-        automatically executed under a `jax.jit` context.
-
-        When running computations on GPU, this can lead to infinite hangs or extremely long
-        compilation times. In those cases, you might try setting the configuration variable
-        `nk.config.netket_experimental_disable_ode_jit = True` to mitigate those issues.
-
     """
 
     def __init__(
         self,
         operator: AbstractOperator,
         variational_state: VariationalState,
-        integrator: RKIntegratorConfig,
+        # TODO: remove default None once `integrator` is removed
+        ode_solver: AbstractSolver = None,
         *,
         t0: float = 0.0,
         propagation_type: str = "real",
-        holomorphic: Optional[bool] = None,
+        # TODO: integrator deprecated in 3.16 (oct/nov 2024)
+        integrator: AbstractSolver = None,
+        holomorphic: bool | None = None,
         diag_shift: float = 0.0,
-        diag_scale: Optional[float] = None,
-        error_norm: Union[str, Callable] = "qgt",
+        diag_scale: float | None = None,
+        error_norm: str | Callable = "qgt",
         rcond: float = 1e-14,
         rcond_smooth: float = 1e-8,
         snr_atol: float = 1,
@@ -124,7 +116,7 @@ class TDVPSchmitt(TDVPBaseDriver):
             operator: The generator of the dynamics (Hamiltonian for pure states,
                 Lindbladian for density operators).
             variational_state: The variational state.
-            integrator: Configuration of the algorithm used for solving the ODE.
+            ode_solver: Solving algorithm used the ODE.
             t0: Initial time at the start of the time evolution.
             propagation_type: Determines the equation of motion: "real"  for the
                 real-time Schrödinger equation (SE), "imag" for the imaginary-time SE.
@@ -181,7 +173,12 @@ class TDVPSchmitt(TDVPBaseDriver):
         self.diag_scale = diag_scale
 
         super().__init__(
-            operator, variational_state, integrator, t0=t0, error_norm=error_norm
+            operator,
+            variational_state,
+            ode_solver,
+            t0=t0,
+            error_norm=error_norm,
+            integrator=integrator,
         )
 
 
@@ -218,8 +215,16 @@ def _impl(parameters, n_samples, E_loc, S, rhs_coeff, rcond, rcond_smooth, snr_a
     QEdata = Q.conj() * ΔE_loc
     rho = V.conj().T @ F
 
-    # Compute the SNR according to Eq. 21
-    snr = jnp.abs(rho) * jnp.sqrt(n_samples) / jnp.sqrt(stats.var(QEdata, axis=0))
+    # Compute the SNR according to Eq. 21 but taking care of where sigma_k is zero
+    sigma_k = jnp.maximum(jnp.sqrt(stats.var(QEdata, axis=0)), rcond)
+    # Here we are hardcoding the case where rho==0 and sigma_k==0 to have infinite snr.
+    # This is an arbitrary choice, but avoids generating NaNs in the snr calculation.
+    # See netket#1959 and #1960 for more details.
+    snr = jnp.where(
+        sigma_k == 0,
+        jnp.inf,
+        jnp.abs(rho) * jnp.sqrt(n_samples) / sigma_k,
+    )
 
     # Discard eigenvalues below numerical precision
     ev_inv = jnp.where(jnp.abs(ev / ev[-1]) > rcond, 1.0 / ev, 0.0)

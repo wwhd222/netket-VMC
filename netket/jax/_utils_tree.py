@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from functools import reduce
-from typing import Callable
+from functools import reduce, partial
+from collections.abc import Callable
 
 
 import jax
@@ -110,7 +110,7 @@ def tree_conj(t: PyTree) -> PyTree:
 @jax.jit
 def tree_dot(a: PyTree, b: PyTree) -> Scalar:
     r"""
-    compute the dot product of two pytrees
+    Computes the dot product of two pytrees
 
     Args:
         a, b: pytrees with the same treedef
@@ -124,6 +124,34 @@ def tree_dot(a: PyTree, b: PyTree) -> Scalar:
             jax.numpy.sum, jax.tree_util.tree_map(jax.numpy.multiply, a, b)
         ),
     )
+
+
+@partial(jax.jit, static_argnames="ord")
+def tree_norm(a: PyTree, ord: int = 2) -> Scalar:
+    r"""
+    Compute the norm of a pytree, intended as a 1D vector of values.
+
+    Equivalent to :code:`jnp.linalg.norm(nk.jax.tree_ravel(a)[0], ord)`.
+
+    Args:
+        a: A pytree, interpreted as a vector
+        ord: Specify the vector L norm to be computed. Defaults to L=2.
+
+    Returns:
+        A scalar.
+    """
+    sum_norm = jax.tree_util.tree_reduce(
+        jax.numpy.add,
+        jax.tree_util.tree_map(
+            jax.numpy.sum, jax.tree_util.tree_map(lambda x: jnp.abs(x) ** ord, a)
+        ),
+    )
+    if ord == 2:
+        return jnp.sqrt(sum_norm)
+    elif ord == 1:
+        return sum_norm
+    else:
+        return jnp.power(sum_norm, 1 / ord)
 
 
 @jax.jit
@@ -151,21 +179,36 @@ def tree_cast(x: PyTree, target: PyTree) -> PyTree:
 
 
 @jax.jit
-def tree_axpy(a: Scalar, x: PyTree, y: PyTree) -> PyTree:
+def tree_axpy(a: Scalar | PyTree, x: PyTree, y: PyTree) -> PyTree:
     r"""
-    compute a * x + y
+    Compute a * x + y
 
     Args:
-      a: scalar
+      a: scalar or pytree
       x, y: pytrees with the same treedef
     Returns:
         The sum of the respective leaves of the two pytrees x and y
         where the leaves of x are first scaled with a.
     """
+    ax = tree_ax(a, x)
+    return jax.tree_util.tree_map(lambda ax_, y_: ax_ + y_, ax, y)
+
+
+@jax.jit
+def tree_ax(a: Scalar | PyTree, x: PyTree) -> PyTree:
+    r"""
+    Compute a * x , where a is a scalar or pytree.
+
+    Args:
+      a: scalar
+      x: pytree
+    Returns:
+        The pytree x scaled by a
+    """
     if is_scalar(a):
-        return jax.tree_util.tree_map(lambda x_, y_: a * x_ + y_, x, y)
+        return jax.tree_util.tree_map(lambda x_: a * x_, x)
     else:
-        return jax.tree_util.tree_map(lambda a_, x_, y_: a_ * x_ + y_, a, x, y)
+        return jax.tree_util.tree_map(lambda a_, x_: a_ * x_, a, x)
 
 
 class RealImagTuple(tuple):

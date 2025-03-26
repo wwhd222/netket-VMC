@@ -15,9 +15,9 @@ from ..variational.finite_diff import central_diff_grad
 
 from .. import common
 
-pytestmark = common.skipif_mpi
+pytestmark = common.skipif_distributed
 
-SEED = 21478364
+SEED = 21478362
 
 
 def _setup_vmc(dtype=np.float32, sr=True):
@@ -180,18 +180,6 @@ def test_no_preconditioner_api():
     driver.preconditioner = None
     assert driver.preconditioner(None, 1) == 1
     assert driver.preconditioner(None, 1, 2) == 1
-
-
-def test_preconditioner_deprecated_signature():
-    ha, sx, ma, sampler, driver = _setup_vmc(sr=True)
-
-    sr = driver.preconditioner
-    _sr = lambda vstate, grad: sr(vstate, grad)
-
-    with pytest.warns(FutureWarning):
-        driver.preconditioner = _sr
-
-    driver.run(1)
 
 
 def test_observable_jaxoperator():

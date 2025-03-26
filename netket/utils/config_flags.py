@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Union
-
 import os
 import sys
 import warnings
@@ -44,7 +42,7 @@ def int_env(varname: str, default: int) -> int:
     return int(os.getenv(varname, default))
 
 
-def get_env(varname: str, type, default: Union[int, bool]) -> Union[int, bool]:
+def get_env(varname: str, type, default: int | bool) -> int | bool:
     if type is int:
         return int_env(varname, default)
     elif type is bool:
@@ -163,6 +161,9 @@ class Config:
 
         return txt
 
+    def __dir__(self):
+        return list(k.lower() for k in self._values.keys())
+
 
 config = Config()
 FLAGS = config.FLAGS
@@ -242,12 +243,15 @@ config.define(
     runtime=True,
 )
 
+# TODO: removed in january 2025, defaults to True now.
 config.define(
     "NETKET_EXPERIMENTAL_DISABLE_ODE_JIT",
     bool,
     default=True,
     help=dedent(
         """
+        Deprecated: jax does not support reentrant callbacks anymore.
+
         Disables the jitting of the whole ode solver, mainly used within TDVP solvers.
         The jitting is sometimes incompatible with GPU-based calculations, and on large
         calculations it gives negligible speedups so it might be beneficial to disable it.
@@ -353,20 +357,6 @@ config.define(
 )
 
 
-config.define(
-    "NETKET_EXPERIMENTAL_SHARDING_NUMBA_WRAPPER_WARNING",
-    bool,
-    default=True,
-    help=dedent(
-        """
-        Raise a warning when the highly experimental wrapper for numba operators
-        acting on sharded arrays is used.
-        """
-    ),
-    runtime=True,
-)
-
-
 def _recompute_default_device(val):
     if val is False:
         import jax
@@ -389,6 +379,50 @@ config.define(
         """
         If there are more than 1 device per MPI rank, and if they are GPU devices,
         Set the default device by querying the local MPI rank.
+        """
+    ),
+)
+
+
+config.define(
+    "NETKET_RANDOM_STATE_FALLBACK_WARNING",
+    bool,
+    default=True,
+    runtime=True,
+    help=dedent(
+        """
+        Print a warning every time you use a fallback that could never stop running
+        when using random_state of constrained hilbert spaces with custom
+        constraints.
+        """
+    ),
+)
+
+
+config.define(
+    "NETKET_EXPERIMENTAL_SHARDING_FAST_SERIALIZATION",
+    bool,
+    default=False,
+    runtime=True,
+    help=dedent(
+        """
+        If True (Defaults False) does not gather data on the master process when
+        using flax.serialization methods. This allows to use orbax-checkpoint with
+        higher efficiency.
+        """
+    ),
+)
+
+
+config.define(
+    "NETKET_SPIN_ORDERING_WARNING",
+    bool,
+    default=True,
+    runtime=True,
+    help=dedent(
+        """
+        If True (Defaults True) warns if the ordering of spins in the Hilbert space
+        is not declared.
         """
     ),
 )

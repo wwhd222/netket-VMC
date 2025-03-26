@@ -3,17 +3,13 @@ from functools import partial
 import jax
 from jax.tree_util import Partial
 
-from netket.jax import (
-    compose,
-    scanmap,
-    scan_append_reduce,
-    vjp as nkvjp,
-)
 from netket.utils import HashablePartial
 from netket.utils import config
 from netket.jax.sharding import sharding_decorator
 
-from ._scanmap import _multimap
+from ._utils_tree import compose
+from ._scanmap import scanmap, scan_append_reduce, _multimap
+from ._vjp import vjp as nkvjp
 from ._chunk_utils import _chunk as _tree_chunk, _unchunk as _tree_unchunk
 
 
@@ -204,14 +200,14 @@ def vjp_chunked(
         >>> vjp_fun = jax.vjp(f, p, X)[1]
         >>>
         >>> vjp_fun_chunked(w)
-        (Array([106.76358917, 113.3123931 , 101.95475061, 104.11138622,
-                      111.95590131, 109.17531467, 108.97138052, 106.89249739],            dtype=float64),)
+        (Array([111.86823507, 113.85048108, 108.02106492, 105.52985363,
+            113.77619631, 115.65305102, 111.87524229, 108.62734199],      dtype=float64),)
         >>> vjp_fun(w)[:1]
-        (Array([106.76358917, 113.3123931 , 101.95475061, 104.11138622,
-                      111.95590131, 109.17531467, 108.97138052, 106.89249739],            dtype=float64),)
+        (Array([111.86823507, 113.85048108, 108.02106492, 105.52985363,
+                      113.77619631, 115.65305102, 111.87524229, 108.62734199],            dtype=float64),)
     """
 
-    if not isinstance(primals, (tuple, list)):
+    if not isinstance(primals, tuple | list):
         raise TypeError(
             "primal arguments to vjp_chunked must be a tuple or list; "
             f"found {type(primals).__name__}."
@@ -235,7 +231,7 @@ def vjp_chunked(
     ############################################################################
     # sharding
 
-    if config.netket_experimental_sharding and chunk_size is not None:
+    if config.netket_experimental_sharding and chunk_size is not None:  # type: ignore
         if return_forward:
             raise NotImplementedError
 
@@ -290,12 +286,12 @@ def vjp_chunked(
         y, vjp_fun = nkvjp(fun, *primals, conjugate=conjugate, has_aux=has_aux)
         if return_forward:
 
-            def __vjp_fun(y, vjp_fun, cotangents):
+            def __vjp_fun_retfwd(y, vjp_fun, cotangents):
                 res = vjp_fun(cotangents)
                 res = _trash_tuple_elements(res, nondiff_argnums)
                 return y, res
 
-            return Partial(__vjp_fun, y, vjp_fun)
+            return Partial(__vjp_fun_retfwd, y, vjp_fun)
         else:
 
             def __vjp_fun(vjp_fun, cotangents):

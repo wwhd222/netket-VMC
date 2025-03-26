@@ -15,12 +15,15 @@
 import netket as nk
 import numpy as np
 from scipy import sparse
-from scipy.sparse import linalg
 
 import pytest
 from pytest import approx
 
 from netket.operator import spin
+
+from .. import common
+
+pytestmark = common.skipif_sharding
 
 np.set_printoptions(linewidth=180)
 
@@ -41,7 +44,7 @@ for i in range(L):
     j_ops.append(1j * spin.sigmam(hi, i))
 
 
-#  Create the lindbladian with
+# Create the lindbladian with
 lind = nk.operator.LocalLiouvillian(ha, j_ops)
 
 
@@ -53,7 +56,7 @@ def test_lindblad_form():
     hnh_mat = ha.to_sparse()
     for j_op in j_ops:
         j_mat = j_op.to_sparse()
-        hnh_mat -= 0.5j * j_mat.H * j_mat
+        hnh_mat -= 0.5j * j_mat.T.conj() * j_mat
 
     # Compute the left and right product with identity
     lind_mat = -1j * sparse.kron(hnh_mat, idmat) + 1j * sparse.kron(
@@ -82,8 +85,8 @@ def test_liouvillian_no_dissipators():
 
 
 def test_lindblad_zero_eigenvalue():
-    lind_mat = lind.to_sparse()
-    w, v = linalg.eigsh(lind_mat.T.conj() * lind_mat, which="SM")
+    lind_mat = lind.to_dense()
+    w, v = np.linalg.eigh(lind_mat.T.conj() @ lind_mat)
     assert w[0] <= 10e-10
 
 

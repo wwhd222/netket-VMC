@@ -12,13 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
 
 from netket.jax import tree_ravel
+from netket.utils.api_utils import partial_from_kwargs
+from netket.utils.deprecation import warn_deprecation
 
 
-def pinv_smooth(A, b, rcond=1e-14, rcond_smooth=1e-14, x0=None):
+@partial_from_kwargs
+def pinv_smooth(
+    A,
+    b,
+    *,
+    rtol: float = 1e-14,
+    rtol_smooth: float = 1e-14,
+    x0=None,
+    rcond: float = None,
+    rcond_smooth: float = None,
+):
     r"""
     Solve the linear system by building a pseudo-inverse from the
     eigendecomposition obtained from :func:`jax.numpy.linalg.eigh`.
@@ -49,29 +63,52 @@ def pinv_smooth(A, b, rcond=1e-14, rcond_smooth=1e-14, x0=None):
         :obj:`~netket.optimizer.solver.pinv`.
 
 
+    .. note::
+
+        If you pass only keyword arguments, this solver will directly create
+        a partial capturing them.
+
+
     Args:
         A: LinearOperator (matrix)
         b: vector or Pytree
-        rcond : Cut-off ratio for small singular values of :code:`A`. For
+        rtol : Relative tolerance for small singular values of :code:`A`. For
             the purposes of rank determination, singular values are treated
-            as zero if they are smaller than rcond times the largest
+            as zero if they are smaller than `rtol` times the largest
             singular value of :code:`A`.
-        rcond_smooth : regularization parameter used with a similar effect to `rcond`
+        rtol_smooth : Regularization parameter used with a similar effect to `rtol`
             but with a softer curve. See :math:`\epsilon` in the formula
             above.
+        rcond: (deprecated) Alias for `rtol`. Will be removed in a future release.
+        rcond_smooth: (deprecated) Alias for `rtol_smooth`. Will be removed in a future release.
     """
     del x0
 
-    A = A.to_dense()
+    if rcond is not None:
+        warn_deprecation(
+            "The 'rcond' argument is deprecated and will be removed in a future release. "
+            "Please use 'rtol' instead."
+        )
+        rtol = rcond
+
+    if rcond_smooth is not None:
+        warn_deprecation(
+            "The 'rcond_smooth' argument is deprecated and will be removed in a future release. "
+            "Please use 'rtol_smooth' instead."
+        )
+        rtol_smooth = rcond
+
+    if not isinstance(A, jax.Array):
+        A = A.to_dense()
     b, unravel = tree_ravel(b)
 
     Σ, U = jnp.linalg.eigh(A)
 
     # Discard eigenvalues below numerical precision
-    Σ_inv = jnp.where(jnp.abs(Σ / Σ[-1]) > rcond, jnp.reciprocal(Σ), 0.0)
+    Σ_inv = jnp.where(jnp.abs(Σ / Σ[-1]) > rtol, jnp.reciprocal(Σ), 0.0)
 
     # Set regularizer for singular value cutoff
-    regularizer = 1.0 / (1.0 + (rcond_smooth / jnp.abs(Σ / Σ[-1])) ** 6)
+    regularizer = 1.0 / (1.0 + (rtol_smooth / jnp.abs(Σ / Σ[-1])) ** 6)
 
     Σ_inv = Σ_inv * regularizer
 
@@ -80,14 +117,15 @@ def pinv_smooth(A, b, rcond=1e-14, rcond_smooth=1e-14, x0=None):
     return unravel(x), None
 
 
-def pinv(A, b, rcond=1e-12, x0=None):
+@partial_from_kwargs
+def pinv(A, b, *, rtol: float = 1e-12, x0=None, rcond: float = None):
     """
     Solve the linear system using jax's implementation of the
     pseudo-inverse.
 
     Internally it calls :func:`~jax.numpy.linalg.pinv` which
     uses a :func:`~jax.numpy.linalg.svd` decomposition with
-    the same value of **rcond**.
+    the same value of **rtol**.
 
     .. note::
 
@@ -102,34 +140,54 @@ def pinv(A, b, rcond=1e-12, x0=None):
         :obj:`~netket.optimizer.solver.pinv`.
 
 
+    .. note::
+
+        If you pass only keyword arguments, this solver will directly create
+        a partial capturing them.
+
     The diagonal shift on the matrix can be 0 and the
-    **rcond** variable can be used to truncate small
+    **rtol** variable can be used to truncate small
     eigenvalues.
 
     Args:
         A: the matrix A in Ax=b
         b: the vector b in Ax=b
-        rcond: The condition number
+        rtol: Cut-off ratio for small singular values of :code:`A`.
+        rcond: (deprecated) Alias for `rtol`. Will be removed in a future release.
     """
     del x0
 
-    A = A.to_dense()
+    if rcond is not None:
+        warn_deprecation(
+            "The 'rcond' argument is deprecated and will be removed in a future release. "
+            "Please use 'rtol' instead."
+        )
+        rtol = rcond
+
+    if not isinstance(A, jax.Array):
+        A = A.to_dense()
     b, unravel = tree_ravel(b)
 
-    x, residuals, rank, s = jnp.linalg.lstsq(A, b, rcond=rcond)
-    A_inv = jnp.linalg.pinv(A, rcond=rcond, hermitian=True)
+    A_inv = jnp.linalg.pinv(A, rtol=rtol, hermitian=True)
+
     x = jnp.dot(A_inv, b)
 
     return unravel(x), None
 
 
-def svd(A, b, rcond=None, x0=None):
+@partial_from_kwargs
+def svd(A, b, *, rcond=None, x0=None):
     """
     Solve the linear system using Singular Value Decomposition.
     The diagonal shift on the matrix should be 0.
 
     Internally uses :func:`jax.numpy.linalg.lstsq`.
 
+    .. note::
+
+        If you pass only keyword arguments, this solver will directly create
+        a partial capturing them.
+
     Args:
         A: the matrix A in Ax=b
         b: the vector b in Ax=b
@@ -137,7 +195,8 @@ def svd(A, b, rcond=None, x0=None):
     """
     del x0
 
-    A = A.to_dense()
+    if not isinstance(A, jax.Array):
+        A = A.to_dense()
     b, unravel = tree_ravel(b)
 
     x, residuals, rank, s = jnp.linalg.lstsq(A, b, rcond=rcond)
@@ -145,12 +204,18 @@ def svd(A, b, rcond=None, x0=None):
     return unravel(x), (residuals, rank, s)
 
 
-def cholesky(A, b, lower=False, x0=None):
+@partial_from_kwargs
+def cholesky(A, b, *, lower=False, x0=None):
     """
     Solve the linear system using a Cholesky Factorisation.
     The diagonal shift on the matrix should be 0.
 
     Internally uses :func:`jax.numpy.linalg.cho_solve`.
+
+    .. note::
+
+        If you pass only keyword arguments, this solver will directly create
+        a partial capturing them.
 
     Args:
         A: the matrix A in Ax=b
@@ -161,7 +226,8 @@ def cholesky(A, b, lower=False, x0=None):
 
     del x0
 
-    A = A.to_dense()
+    if not isinstance(A, jax.Array):
+        A = A.to_dense()
     b, unravel = tree_ravel(b)
 
     c, low = jsp.linalg.cho_factor(A, lower=lower)
@@ -169,12 +235,18 @@ def cholesky(A, b, lower=False, x0=None):
     return unravel(x), None
 
 
-def LU(A, b, trans=0, x0=None):
+@partial_from_kwargs
+def LU(A, b, *, trans=0, x0=None):
     """
     Solve the linear system using a LU Factorisation.
     The diagonal shift on the matrix should be 0.
 
     Internally uses :func:`jax.numpy.linalg.lu_solve`.
+
+    .. note::
+
+        If you pass only keyword arguments, this solver will directly create
+        a partial capturing them.
 
     Args:
         A: the matrix A in Ax=b
@@ -185,7 +257,8 @@ def LU(A, b, trans=0, x0=None):
 
     del x0
 
-    A = A.to_dense()
+    if not isinstance(A, jax.Array):
+        A = A.to_dense()
     b, unravel = tree_ravel(b)
 
     lu, piv = jsp.linalg.lu_factor(A)
@@ -195,12 +268,18 @@ def LU(A, b, trans=0, x0=None):
 
 # I believe this internally uses a smarter/more efficient way to
 # do cholesky
-def solve(A, b, assume_a="pos", x0=None):
+@partial_from_kwargs
+def solve(A, b, *, assume_a="pos", x0=None):
     """
     Solve the linear system.
     The diagonal shift on the matrix should be 0.
 
     Internally uses :func:`jax.numpy.solve`.
+
+    .. note::
+
+        If you pass only keyword arguments, this solver will directly create
+        a partial capturing them.
 
     Args:
         A: the matrix A in Ax=b
@@ -210,7 +289,8 @@ def solve(A, b, assume_a="pos", x0=None):
     """
     del x0
 
-    A = A.to_dense()
+    if not isinstance(A, jax.Array):
+        A = A.to_dense()
     b, unravel = tree_ravel(b)
 
     x = jsp.linalg.solve(A, b, assume_a="pos")

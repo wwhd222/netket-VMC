@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 import numpy as np
 
@@ -20,9 +19,9 @@ import jax
 import jax.numpy as jnp
 
 from netket.operator import DiscreteOperator
-from netket.experimental.hilbert import SpinOrbitalFermions
+from netket.hilbert import SpinOrbitalFermions
 from netket.utils.optional_deps import import_optional_dependency
-from ._fermion_operator_2nd_numba import FermionOperator2nd
+from netket.operator import FermionOperator2nd
 
 
 def compute_pyscf_integrals(mol, mo_coeff):
@@ -293,7 +292,7 @@ def TV_from_pyscf_molecule(
 
 def from_pyscf_molecule(
     molecule,  # type: pyscf.gto.mole.Mole  # noqa: F821
-    mo_coeff: Optional[np.ndarray] = None,
+    mo_coeff: np.ndarray | None = None,
     *,
     cutoff: float = 1e-11,
     implementation: DiscreteOperator = FermionOperator2nd,

@@ -47,6 +47,7 @@ Guidelines on citation are provided in the [Citation](https://www.netket.org/cit
 
 docs/install
 docs/parallelization
+docs/clusters
 docs/sharp-bits
 ```   
 
@@ -58,6 +59,7 @@ tutorials/gs-ising
 tutorials/gs-continuous-space
 tutorials/gs-heisenberg
 tutorials/gs-j1j2
+tutorials/ViT-wave-function
 tutorials/gs-matrix-models
 tutorials/gs-gcnn-honeycomb
 tutorials/lattice-fermions

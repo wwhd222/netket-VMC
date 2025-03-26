@@ -13,13 +13,15 @@
 # limitations under the License.
 
 from itertools import permutations
-from typing import Union
+from functools import partial
 from collections.abc import Sequence
 import numpy as np
+import warnings
 
 from .lattice import Lattice
 
 from netket.utils.group import PointGroup, PGSymmetry, planar, cubic, Identity
+from netket.errors import InitializePeriodicLatticeOnSmallLatticeWarning
 
 
 def _perm_symm(perm: tuple) -> PGSymmetry:
@@ -71,8 +73,9 @@ def _grid_point_group(
 def Grid(
     extent: Sequence[int],
     *,
-    pbc: Union[bool, Sequence[bool]] = True,
+    pbc: bool | Sequence[bool] = True,
     color_edges: bool = False,
+    point_group: PointGroup | None = None,
     **kwargs,
 ) -> Lattice:
     """
@@ -89,6 +92,8 @@ def Grid(
         color_edges: generates nearest-neighbour edges colored according to direction
                      i.e. edges along Cartesian direction #i have color i
                      cannot be used with `max_neighbor_order` or `custom_edges`
+        point_group: point group object describing the symmetry of the lattice
+            If not specified, uses the full hypercube symmetry group.
         kwargs: Additional keyword arguments are passed on to the constructor of
             :ref:`netket.graph.Lattice`.
 
@@ -107,17 +112,30 @@ def Grid(
         12
     """
     extent = np.asarray(extent, dtype=int)
-
     ndim = len(extent)
     if isinstance(pbc, bool):
         pbc = [pbc] * ndim
+    raised_periodic_lattice_on_small_lattice_warning = False
+    for i in range(ndim):
+        if (
+            extent[i] <= 2
+            and pbc[i]
+            and not raised_periodic_lattice_on_small_lattice_warning
+        ):
+            raised_periodic_lattice_on_small_lattice_warning = True
+            warnings.warn(
+                InitializePeriodicLatticeOnSmallLatticeWarning(extent[i], i),
+                UserWarning,
+            )
     if color_edges:
         kwargs["custom_edges"] = [(0, 0, vec) for vec in np.eye(ndim)]
+    if point_group is None:
+        point_group = partial(_grid_point_group, extent, pbc, color_edges)
     return Lattice(
         basis_vectors=np.eye(ndim),
         extent=extent,
         pbc=pbc,
-        point_group=lambda: _grid_point_group(extent, pbc, color_edges),
+        point_group=point_group,
         **kwargs,
     )
 
@@ -218,7 +236,11 @@ def Chain(length: int, *, pbc: bool = True, **kwargs) -> Lattice:
 
 
 def BCC(
-    extent: Sequence[int], *, pbc: Union[bool, Sequence[bool]] = True, **kwargs
+    extent: Sequence[int],
+    *,
+    pbc: bool | Sequence[bool] = True,
+    point_group: PointGroup | None = None,
+    **kwargs,
 ) -> Lattice:
     """Constructs a BCC lattice of a given spatial extent.
     Periodic boundary conditions can also be imposed
@@ -232,6 +254,8 @@ def BCC(
              This parameter can also be a list of booleans with same length as
              the parameter `length`, in which case each dimension will have
              PBC/OBC depending on the corresponding entry of `pbc`.
+        point_group: point group object describing the symmetry of the lattice
+            If not specified, uses the full cubic symmetry group.
         kwargs: Additional keyword arguments are passed on to the constructor of
             :ref:`netket.graph.Lattice`.
 
@@ -245,15 +269,20 @@ def BCC(
         27
     """
     basis = [[-0.5, 0.5, 0.5], [0.5, -0.5, 0.5], [0.5, 0.5, -0.5]]
-    # determine if full point group is realised by the simulation box
-    point_group = cubic.Oh() if np.all(pbc) and len(set(extent)) == 1 else None
+    if point_group is None:
+        # determine if full point group is realised by the simulation box
+        point_group = cubic.Oh() if np.all(pbc) and len(set(extent)) == 1 else None
     return Lattice(
         basis_vectors=basis, extent=extent, pbc=pbc, point_group=point_group, **kwargs
     )
 
 
 def FCC(
-    extent: Sequence[int], *, pbc: Union[bool, Sequence[bool]] = True, **kwargs
+    extent: Sequence[int],
+    *,
+    pbc: bool | Sequence[bool] = True,
+    point_group: PointGroup | None = None,
+    **kwargs,
 ) -> Lattice:
     """Constructs an FCC lattice of a given spatial extent.
     Periodic boundary conditions can also be imposed
@@ -267,6 +296,8 @@ def FCC(
              This parameter can also be a list of booleans with same length as
              the parameter `length`, in which case each dimension will have
              PBC/OBC depending on the corresponding entry of `pbc`.
+        point_group: point group object describing the symmetry of the lattice
+            If not specified, uses the full cubic symmetry group.
         kwargs: Additional keyword arguments are passed on to the constructor of
             :ref:`netket.graph.Lattice`.
 
@@ -280,15 +311,20 @@ def FCC(
         27
     """
     basis = [[0, 0.5, 0.5], [0.5, 0, 0.5], [0.5, 0.5, 0]]
-    # determine if full point group is realised by the simulation box
-    point_group = cubic.Oh() if np.all(pbc) and len(set(extent)) == 1 else None
+    if point_group is None:
+        # determine if full point group is realised by the simulation box
+        point_group = cubic.Oh() if np.all(pbc) and len(set(extent)) == 1 else None
     return Lattice(
         basis_vectors=basis, extent=extent, pbc=pbc, point_group=point_group, **kwargs
     )
 
 
 def Diamond(
-    extent: Sequence[int], *, pbc: Union[bool, Sequence[bool]] = True, **kwargs
+    extent: Sequence[int],
+    *,
+    pbc: bool | Sequence[bool] = True,
+    point_group: PointGroup | None = None,
+    **kwargs,
 ) -> Lattice:
     """Constructs a diamond lattice of a given spatial extent.
     Periodic boundary conditions can also be imposed.
@@ -304,6 +340,8 @@ def Diamond(
              This parameter can also be a list of booleans with same length as
              the parameter `length`, in which case each dimension will have
              PBC/OBC depending on the corresponding entry of `pbc`.
+        point_group: point group object describing the symmetry of the lattice
+            If not specified, uses the full symmetry group of the diamond lattice.
         kwargs: Additional keyword arguments are passed on to the constructor of
             :ref:`netket.graph.Lattice`.
 
@@ -318,8 +356,9 @@ def Diamond(
     """
     basis = [[0, 0.5, 0.5], [0.5, 0, 0.5], [0.5, 0.5, 0]]
     sites = [[0, 0, 0], [0.25, 0.25, 0.25]]
-    # determine if full point group is realised by the simulation box
-    point_group = cubic.Fd3m() if np.all(pbc) and len(set(extent)) == 1 else None
+    if point_group is None:
+        # determine if full point group is realised by the simulation box
+        point_group = cubic.Fd3m() if np.all(pbc) and len(set(extent)) == 1 else None
     return Lattice(
         basis_vectors=basis,
         site_offsets=sites,
@@ -331,7 +370,11 @@ def Diamond(
 
 
 def Pyrochlore(
-    extent: Sequence[int], *, pbc: Union[bool, Sequence[bool]] = True, **kwargs
+    extent: Sequence[int],
+    *,
+    pbc: bool | Sequence[bool] = True,
+    point_group: PointGroup | None = None,
+    **kwargs,
 ) -> Lattice:
     """Constructs a pyrochlore lattice of a given spatial extent.
     Periodic boundary conditions can also be imposed.
@@ -347,6 +390,8 @@ def Pyrochlore(
             This parameter can also be a list of booleans with same length as
             the parameter `length`, in which case each dimension will have
             PBC/OBC depending on the corresponding entry of `pbc`.
+        point_group: point group object describing the symmetry of the lattice
+            If not specified, uses the full symmetry group of the pyrochlore lattice.
         kwargs: Additional keyword arguments are passed on to the constructor of
             :ref:`netket.graph.Lattice`.
 
@@ -361,8 +406,9 @@ def Pyrochlore(
     """
     basis = [[0, 0.5, 0.5], [0.5, 0, 0.5], [0.5, 0.5, 0]]
     sites = np.array([[1, 1, 1], [1, 3, 3], [3, 1, 3], [3, 3, 1]]) / 8
-    # determine if full point group is realised by the simulation box
-    point_group = cubic.Fd3m() if np.all(pbc) and len(set(extent)) == 1 else None
+    if point_group is None:
+        # determine if full point group is realised by the simulation box
+        point_group = cubic.Fd3m() if np.all(pbc) and len(set(extent)) == 1 else None
     return Lattice(
         basis_vectors=basis,
         site_offsets=sites,
@@ -374,11 +420,17 @@ def Pyrochlore(
 
 
 def _hexagonal_general(
-    extent, *, site_offsets=None, pbc: Union[bool, Sequence[bool]] = True, **kwargs
+    extent,
+    *,
+    site_offsets=None,
+    pbc: bool | Sequence[bool] = True,
+    point_group: PointGroup | None = None,
+    **kwargs,
 ) -> Lattice:
     basis = [[1, 0], [0.5, 0.75**0.5]]
-    # determine if full point group is realised by the simulation box
-    point_group = planar.D(6) if np.all(pbc) and extent[0] == extent[1] else None
+    if point_group is None:
+        # determine if full point group is realised by the simulation box
+        point_group = planar.D(6) if np.all(pbc) and extent[0] == extent[1] else None
     return Lattice(
         basis_vectors=basis,
         extent=extent,
@@ -389,7 +441,7 @@ def _hexagonal_general(
     )
 
 
-def Triangular(extent, *, pbc: Union[bool, Sequence[bool]] = True, **kwargs) -> Lattice:
+def Triangular(extent, *, pbc: bool | Sequence[bool] = True, **kwargs) -> Lattice:
     r"""Constructs a triangular lattice of a given spatial extent.
     Periodic boundary conditions can also be imposed
     Sites are returned at the Bravais lattice points.
@@ -402,6 +454,8 @@ def Triangular(extent, *, pbc: Union[bool, Sequence[bool]] = True, **kwargs) -> 
              This parameter can also be a list of booleans with same length as
              the parameter `length`, in which case each dimension will have
              PBC/OBC depending on the corresponding entry of `pbc`.
+        point_group: point group object describing the symmetry of the lattice
+            If not specified, uses the full hexagonal symmetry group.
         kwargs: Additional keyword arguments are passed on to the constructor of
             :ref:`netket.graph.Lattice`.
 
@@ -414,10 +468,25 @@ def Triangular(extent, *, pbc: Union[bool, Sequence[bool]] = True, **kwargs) -> 
         >>> print(g.n_nodes)
         9
     """
+    ndim = len(extent)
+    raised_periodic_lattice_on_small_lattice_warning = False
+    if isinstance(pbc, bool):
+        pbc = [pbc] * ndim
+    for i in range(ndim):
+        if (
+            extent[i] <= 2
+            and pbc[i]
+            and not raised_periodic_lattice_on_small_lattice_warning
+        ):
+            raised_periodic_lattice_on_small_lattice_warning = True
+            warnings.warn(
+                InitializePeriodicLatticeOnSmallLatticeWarning(extent[i], i),
+                UserWarning,
+            )
     return _hexagonal_general(extent, site_offsets=None, pbc=pbc, **kwargs)
 
 
-def Honeycomb(extent, *, pbc: Union[bool, Sequence[bool]] = True, **kwargs) -> Lattice:
+def Honeycomb(extent, *, pbc: bool | Sequence[bool] = True, **kwargs) -> Lattice:
     r"""Constructs a honeycomb lattice of a given spatial extent.
     Periodic boundary conditions can also be imposed.
     Sites are returned at the 2b Wyckoff positions.
@@ -430,6 +499,8 @@ def Honeycomb(extent, *, pbc: Union[bool, Sequence[bool]] = True, **kwargs) -> L
              This parameter can also be a list of booleans with same length as
              the parameter `length`, in which case each dimension will have
              PBC/OBC depending on the corresponding entry of `pbc`.
+        point_group: point group object describing the symmetry of the lattice
+            If not specified, uses the full hexagonal symmetry group.
         kwargs: Additional keyword arguments are passed on to the constructor of
             :ref:`netket.graph.Lattice`.
 
@@ -450,7 +521,7 @@ def Honeycomb(extent, *, pbc: Union[bool, Sequence[bool]] = True, **kwargs) -> L
     )
 
 
-def Kagome(extent, *, pbc: Union[bool, Sequence[bool]] = True, **kwargs) -> Lattice:
+def Kagome(extent, *, pbc: bool | Sequence[bool] = True, **kwargs) -> Lattice:
     r"""Constructs a kagome lattice of a given spatial extent.
     Periodic boundary conditions can also be imposed.
     Sites are returned at the 3c Wyckoff positions.
@@ -463,6 +534,8 @@ def Kagome(extent, *, pbc: Union[bool, Sequence[bool]] = True, **kwargs) -> Latt
              This parameter can also be a list of booleans with same length as
              the parameter `length`, in which case each dimension will have
              PBC/OBC depending on the corresponding entry of `pbc`.
+        point_group: point group object describing the symmetry of the lattice
+            If not specified, uses the full hexagonal symmetry group.
         kwargs: Additional keyword arguments are passed on to the constructor of
             :ref:`netket.graph.Lattice`.
 
@@ -484,7 +557,11 @@ def Kagome(extent, *, pbc: Union[bool, Sequence[bool]] = True, **kwargs) -> Latt
 
 
 def KitaevHoneycomb(
-    extent, *, pbc: Union[bool, Sequence[bool]] = True, **kwargs
+    extent,
+    *,
+    pbc: bool | Sequence[bool] = True,
+    point_group: PointGroup | None = None,
+    **kwargs,
 ) -> Lattice:
     r"""Constructs a honeycomb lattice of a given spatial extent.
 
@@ -501,6 +578,8 @@ def KitaevHoneycomb(
              This parameter can also be a list of booleans with same length as
              the parameter `length`, in which case each dimension will have
              PBC/OBC depending on the corresponding entry of `pbc`.
+        point_group: point group object describing the symmetry of the lattice
+            If not specified, uses the 180° rotation symmetry of the Kitaev model.
         kwargs: Additional keyword arguments are passed on to the constructor of
             :ref:`netket.graph.Lattice`.
 
@@ -508,19 +587,21 @@ def KitaevHoneycomb(
     Example:
         Construct a Kitaev honeycomb lattice with 3 × 3 unit cells:
 
-        >>> from netket.graph import Honeycomb
+        >>> from netket.graph import KitaevHoneycomb
         >>> g = KitaevHoneycomb(extent=[3, 3])
         >>> print(g.n_nodes)
         18
         >>> print(len(g.edges(filter_color=2)))
         9
     """
+    if point_group is None:
+        point_group = planar.C(2) if np.all(pbc) else None
     return Lattice(
         basis_vectors=[[1, 0], [0.5, 0.75**0.5]],
         extent=extent,
         site_offsets=[[0.5, 0.5 / 3**0.5], [1, 1 / 3**0.5]],
         pbc=pbc,
-        point_group=planar.C(2) if np.all(pbc) else None,
+        point_group=point_group,
         custom_edges=[
             (0, 1, [0.5, 0.5 / 3**0.5]),
             (0, 1, [-0.5, 0.5 / 3**0.5]),

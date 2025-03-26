@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Union
 from collections.abc import Sequence
 
 import numpy as np
@@ -35,8 +34,8 @@ class Graph(AbstractGraph):
     # ------------------------------------------------------------------------
     def __init__(
         self,
-        edges: Union[Sequence[Edge], Sequence[ColoredEdge]],
-        n_nodes: Optional[int] = None,
+        edges: Sequence[Edge] | Sequence[ColoredEdge],
+        n_nodes: int | None = None,
     ):
         """
         Construct the a graph starting from a list of edges and optionally a given
@@ -155,7 +154,7 @@ class Graph(AbstractGraph):
         color=None,
         *,
         return_color: bool = False,
-        filter_color: Optional[int] = None,
+        filter_color: int | None = None,
     ) -> EdgeSequence:
         if color is not None:
             warn_deprecation(
@@ -271,8 +270,24 @@ def DoubledGraph(graph: AbstractGraph) -> Graph:
     return Graph(n_nodes=dnodes1, edges=dedges1),Graph(n_nodes=dnodes2, edges=dedges2)
 
 
-def disjoint_union(graph_1: Graph, graph_2: Graph) -> Graph:
+def disjoint_union(*graphs: tuple[Graph, ...]) -> Graph:
     """
-    Returns the disjoint union of two graphs.
+    Returns the ordered disjoint union of the input graphs.
+
+    The ordering of the nodes is the same as the input order, so if
+    the I-th input graph has :math:`n_i` nodes, the first `[0, n_1[` nodes
+    will correspond to the first graph, the nodes between :math:`[n_1, n_1+n2[`
+    will correspond to the second graph, and so on and so forth.
+
+    Args:
+       *graphs: A variable number of NetKet graphs (or lattices).
+
+    Output:
+        A NetKet Graph object.
     """
-    return Graph.from_igraph(igraph.disjoint_union([graph_1._igraph, graph_2._igraph]))
+    if len(graphs) == 0:
+        raise ValueError("Must provide at least one graph")
+    elif len(graphs) == 1:
+        return graphs[0]
+    else:
+        return Graph.from_igraph(igraph.disjoint_union([g._igraph for g in graphs]))

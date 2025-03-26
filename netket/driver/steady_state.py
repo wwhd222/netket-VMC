@@ -12,16 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
-
-from inspect import signature
 
 from netket.operator import Squared, AbstractSuperOperator
 from netket.vqs import MCMixedState
 from netket.optimizer import (
     identity_preconditioner,
     PreconditionerT,
-    _DeprecatedPreconditionerSignature,
 )
 from netket.jax import tree_cast
 from netket.utils.types import Optimizer
@@ -115,12 +111,9 @@ class SteadyState(AbstractVariationalDriver):
         return self._preconditioner
 
     @preconditioner.setter
-    def preconditioner(self, val: Optional[PreconditionerT]):
+    def preconditioner(self, val: PreconditionerT | None):
         if val is None:
             val = identity_preconditioner
-
-        if len(signature(val).parameters) == 2:
-            val = _DeprecatedPreconditionerSignature(val)
 
         self._preconditioner = val
 

@@ -19,7 +19,7 @@ from functools import partial
 
 import numpy as np
 
-from netket.experimental.hilbert import SpinOrbitalFermions
+from netket.hilbert import SpinOrbitalFermions
 from netket.utils.types import NNInitFunc, DType
 from netket.nn.masked_linear import default_kernel_init
 from netket import jax as nkjax
@@ -188,6 +188,8 @@ class Slater2nd(nn.Module):
                 f"Dimension mismatch. Expected samples with {self.hilbert.size} "
                 f"degrees of freedom, but got a sample of shape {n.shape} ({n.shape[-1]} dof)."
             )
+        if not jnp.issubdtype(n, int):
+            n = jnp.isclose(n, 1)
 
         @partial(jnp.vectorize, signature="(n)->()")
         def log_sd(n):
@@ -204,6 +206,8 @@ class Slater2nd(nn.Module):
                 for i, (n_fermions_i, M_i) in enumerate(
                     zip(self.hilbert.n_fermions_per_spin, self.orbitals)
                 ):
+                    if n_fermions_i == 0:
+                        continue
                     # convert global orbital positions to spin-sector-local positions
                     R_i = (
                         R[i_start : i_start + n_fermions_i]
@@ -213,7 +217,7 @@ class Slater2nd(nn.Module):
                     A_i = M_i[R_i]
 
                     log_det_sum = log_det_sum + nkjax.logdet_cmplx(A_i)
-                    i_start = n_fermions_i
+                    i_start += n_fermions_i
 
             return log_det_sum
 

@@ -12,39 +12,47 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, Optional, Any
+from typing import Any
+from collections.abc import Callable
 
 import abc
-from dataclasses import dataclass
-from textwrap import dedent
 
 from netket.utils.types import PyTree, Scalar
-from netket.utils import warn_deprecation, timing
+from netket.utils import timing, struct
 from netket.vqs import VariationalState
 
 from .linear_operator import LinearOperator, SolverT
 
 # Generic signature of a preconditioner function/object
 
-PreconditionerT = Callable[[VariationalState, PyTree, Optional[Scalar]], PyTree]
+PreconditionerT = Callable[[VariationalState, PyTree, Scalar | None], PyTree]
 """Signature for Gradient preconditioners supported by NetKet drivers."""
 
-LHSConstructorT = Callable[[VariationalState, Optional[Scalar]], LinearOperator]
+LHSConstructorT = Callable[[VariationalState, Scalar | None], LinearOperator]
 """Signature for the constructor of a LinerOperator"""
 
 
-def identity_preconditioner(
-    vstate: VariationalState,
-    gradient: PyTree,
-    step: Optional[Scalar] = 0,
-    *args,
-    **kwargs,
-) -> PyTree:
-    return gradient
+class IdentityPreconditioner(struct.Pytree):
+    """
+    A preconditioner that does not transform the gradient.
+    """
+
+    def __call__(
+        self,
+        vstate: VariationalState,
+        gradient: PyTree,
+        step: Scalar | None = 0,
+        *args,
+        **kwargs,
+    ) -> PyTree:
+        return gradient
 
 
-@dataclass
-class AbstractLinearPreconditioner:
+# For backward compatibility reasons
+identity_preconditioner = IdentityPreconditioner()
+
+
+class AbstractLinearPreconditioner(struct.Pytree, mutable=True):
     """Base class for a Linear Preconditioner solving a system :math:`Sx = F`.
 
     A LinearPreconditioner modifies the gradient :math:`F` in such a way that the new
@@ -66,23 +74,33 @@ class AbstractLinearPreconditioner:
 
     """
 
-    solver: SolverT
+    solver: SolverT = struct.field(serialize=False)
     """Function used to solve the linear system."""
 
     solver_restart: bool = False
     """If False uses the last solution of the linear system as a starting point for the solution
     of the next."""
 
-    x0: Optional[PyTree] = None
+    x0: PyTree | None = None
     """Solution of the last linear system solved."""
 
-    info: Any = None
+    info: Any = struct.field(serialize=False, default=None)
     """Additional information returned by the solver when solving the last linear system."""
 
-    _lhs: LinearOperator = None
+    _lhs: LinearOperator = struct.field(serialize=False, default=None)
     """LHS of the last linear system solved."""
 
     def __init__(self, solver, *, solver_restart=False):
+        """
+        Constructs the structure holding the parameters for using the
+        linear preconditioner.
+
+        Args:
+            solver: A callable that solves a linear system of equations.
+            solver_restart: If False uses the last solution of the linear
+                system as a starting point for the solution of the next
+                (default=False).
+        """
         self.solver = solver
         self.solver_restart = solver_restart
 
@@ -91,7 +109,7 @@ class AbstractLinearPreconditioner:
         self,
         vstate: VariationalState,
         gradient: PyTree,
-        step: Optional[Scalar] = None,
+        step: Scalar | None = None,
         *args,
         **kwargs,
     ) -> PyTree:
@@ -103,7 +121,7 @@ class AbstractLinearPreconditioner:
         return self.x0
 
     @abc.abstractmethod
-    def lhs_constructor(self, vstate: VariationalState, step: Optional[Scalar] = None):
+    def lhs_constructor(self, vstate: VariationalState, step: Scalar | None = None):
         """
         This method should construct the left hand side of the linear system,
         which should be a linear operator.
@@ -119,8 +137,7 @@ class AbstractLinearPreconditioner:
 
 
 # This exists for backward compatibility
-@dataclass
-class LinearPreconditioner(AbstractLinearPreconditioner):
+class LinearPreconditioner(AbstractLinearPreconditioner, mutable=True):
     lhs_constructor: LHSConstructorT
     """Constructor of the LHS of the linear system starting from the variational state."""
 
@@ -135,7 +152,7 @@ class LinearPreconditioner(AbstractLinearPreconditioner):
         self.solver = solver
         self.solver_restart = solver_restart
 
-    def lhs_constructor(self, vstate: VariationalState, step: Optional[Scalar] = None):
+    def lhs_constructor(self, vstate: VariationalState, step: Scalar | None = None):
         """
         This method does things
         """
@@ -149,36 +166,3 @@ class LinearPreconditioner(AbstractLinearPreconditioner):
             + f"\n\tsolver_restart  = {self.solver_restart},"
             + ")"
         )
-
-
-class DeprecatedPreconditionerSignature:
-    """
-    Ignores the step argument for old-syntax preconditioners.
-    """
-
-    def __init__(self, fun):
-        self.preconditioner = fun
-        warn_deprecation(
-            dedent(
-                """
-
-            Preconditioners that only accept two arguments are deprecated since
-            version 3.7 and will no longer be supported in a future version.
-
-            Preconditioners should now accept 3 arguments, where the first two
-            are a Variational State and the gradient, while the last one is an
-            optional scalar value representing the current step along the
-            optimisation and which can be used to update some hyperparamter
-            along the optimisation.
-
-            To silence this deprecation warning, either modify your preconditioner
-            or do the following:
-
-            >>> driver.preconditioner = lambda state, grad, step=None: fun(state, grad)
-
-            """
-            )
-        )
-
-    def __call__(self, vstate: VariationalState, gradient: PyTree, step: Scalar = None):
-        return self.preconditioner(vstate, gradient)

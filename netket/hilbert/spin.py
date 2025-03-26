@@ -12,16 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Optional
 from fractions import Fraction
-from typing import Optional, Union
+
 
 import numpy as np
 
 from netket.utils import StaticRange
 
 from .homogeneous import HomogeneousHilbert
-
-from .index.constraints import SumConstraint
+from .constraint import DiscreteHilbertConstraint, SumConstraint
 
 
 def _check_total_sz(total_sz, S, size):
@@ -53,21 +53,98 @@ def _check_total_sz(total_sz, S, size):
 
 
 class Spin(HomogeneousHilbert):
-    r"""Hilbert space obtained as tensor product of local spin states."""
+    r"""Hilbert space obtained as tensor product of local spin states.
+
+    The correspondance between basis elements of the hilbert space and the configurations
+    that are then fed to variational states is as follows:
+
+    +----------+----------------------------------+-----------------------------------+
+    | State    | Old Behavior                     | New Behavior                      |
+    |          | :code:`inverted_ordering=True`   | :code:`inverted_ordering=False`   |
+    +==========+==================================+===================================+
+    | ↑ ↑ ↑    | -1 -1 -1                         | +1 +1 +1                          |
+    +----------+----------------------------------+-----------------------------------+
+    | ↑ ↑ ↓    | -1 -1 +1                         | +1 +1 -1                          |
+    +----------+----------------------------------+-----------------------------------+
+    | ↑ ↓ ↑    | -1 +1 -1                         | +1 -1 +1                          |
+    +----------+----------------------------------+-----------------------------------+
+    | ↑ ↓ ↓    | -1 +1 +1                         | +1 -1 -1                          |
+    +----------+----------------------------------+-----------------------------------+
+    | ↓ ↑ ↑    | +1 -1 -1                         | -1 +1 +1                          |
+    +----------+----------------------------------+-----------------------------------+
+    | ↓ ↑ ↓    | +1 -1 +1                         | -1 +1 -1                          |
+    +----------+----------------------------------+-----------------------------------+
+    | ↓ ↓ ↑    | +1 +1 -1                         | -1 -1 +1                          |
+    +----------+----------------------------------+-----------------------------------+
+    | ↓ ↓ ↓    | +1 +1 +1                         | -1 -1 -1                          |
+    +----------+----------------------------------+-----------------------------------+
+
+    The old behaviour is the default behaviour of NetKet 3.14 and before, while the new
+    behaviour will become the default starting 1st january 2025.
+    For that reason, in the transition period, we will print warnings asking to explicitly
+    specify which ordering you want
+
+    .. warning::
+
+        The ordering of the Spin Hilbert space basis has historically always been
+        such that `-1=↑, 1=↓`, but it will be changed 1st january 2025 to
+        be such that `1=↑, -1=↓`.
+
+        The change will break:
+            - code that relies on the assumption that -1=↑;
+            - all saves because the inputs to the network will change;
+            - custom operators that rely on the basis being ordered;
+
+        To avoid distruption, NetKet will support **both** conventions in the (near)
+        future. You can specify the ordering you need with :code:`inverted_ordering = True`
+        (historical ordering) or :code:`inverted_ordering=False` (future default behaviour).
+
+        If you do not specify this flag, a future version of NetKet might break your
+        serialized weights or other logic, so we strongly reccomend that you either
+        limit yourself to NetKet 3.14, or that you specify :code:`inverted_ordering`
+        explicitly.
+
+    """
 
     def __init__(
         self,
         s: float,
         N: int = 1,
-        total_sz: Optional[float] = None,
+        *,
+        total_sz: float | None = None,
+        constraint: DiscreteHilbertConstraint | None = None,
+        inverted_ordering: bool = False,
     ):
         r"""Hilbert space obtained as tensor product of local spin states.
 
+        .. note::
+
+            Since NetKet 3.16 (January 2025) the default ordering of the Spin Hilbert space
+            basis has changed. The new default is such that `1=↑, -1=↓`. This change can
+            be controlled by the `inverted_ordering` flag. If you do not specify this flag,
+            you will get the new behaviour.
+
+            To ensure that the old behaviour is maintained, you should specify
+            `inverted_ordering=True`. If you want to opt into the new default
+            you should specify `inverted_ordering=False`.
+
         Args:
-           s: Spin at each site. Must be integer or half-integer.
-           N: Number of sites (default=1)
-           total_sz: If given, constrains the total spin of system to a particular
+            s: Spin at each site. Must be integer or half-integer.
+            N: Number of sites (default=1)
+            total_sz: If given, constrains the total spin of system to a particular
                 value.
+            constraint: A custom constraint on the allowed configurations. This argument
+                cannot be specified at the same time as :code:`total_sz`. The constraint
+                must be a subclass of :class:`~netket.hilbert.DiscreteHilbertConstraint`.
+            inverted_ordering: Flag to specify the ordering of the Local basis. Historically
+                NetKet has always used the convention `-1=↑, 1=↓` (corresponding to
+                :code:`inverted_ordering=True`, but we will change it to `1=↑, -1=↓` (
+                :code:`inverted_ordering=False`).
+                The default as of September 2024 (NetKet 3.14) is :code:`inverted_ordering=True`, but
+                we will change it in the near future.
+                The change will (i) break code that relies on the assumption that -1=↑, and
+                (ii) will break all saves because the inputs to the network will change.
+
 
         Examples:
            Simple spin hilbert space.
@@ -78,23 +155,41 @@ class Spin(HomogeneousHilbert):
            4
         """
         local_size = round(2 * s + 1)
-        local_states = np.empty(local_size)
-
         assert int(2 * s + 1) == local_size
-        local_states = StaticRange(
-            1 - local_size, 2, local_size, dtype=np.int8 if local_size < 2**7 else int
-        )
+
+        # TODO: Remove in NetKet 3.17
+        if inverted_ordering is None:
+            inverted_ordering = False
+
+        if not inverted_ordering:
+            # Reasonable, new ordering where  1=↑ -1=↓
+            local_states = StaticRange(
+                local_size - 1,  # type: ignore[arg-type]
+                -2,  # type: ignore[arg-type]
+                local_size,
+            )
+        else:
+            # Old ordering where -1=↑ 1=↓
+            local_states = StaticRange(
+                1 - local_size,  # type: ignore[arg-type]
+                2,  # type: ignore[arg-type]
+                local_size,
+            )
 
         _check_total_sz(total_sz, s, N)
         if total_sz is not None:
-            constraints = SumConstraint(round(2 * total_sz))
-        else:
-            constraints = None
+            if constraint is not None:
+                raise ValueError(
+                    "Cannot specify at the same time a total magnetization "
+                    "constraint and a `custom_constraint."
+                )
+            constraint = SumConstraint(round(2 * total_sz))
 
         self._total_sz = total_sz
         self._s = s
+        self._inverted_ordering = inverted_ordering
 
-        super().__init__(local_states, N, constraints)
+        super().__init__(local_states, N, constraint=constraint)
 
     def __pow__(self, n):
         if not self.constrained:
@@ -110,7 +205,7 @@ class Spin(HomogeneousHilbert):
 
         return NotImplemented
 
-    def ptrace(self, sites: Union[int, list]) -> Optional["Spin"]:
+    def ptrace(self, sites: int | list) -> Optional["Spin"]:
         if isinstance(sites, int):
             sites = [sites]
 
@@ -120,10 +215,8 @@ class Spin(HomogeneousHilbert):
                     f"Site {site} not in this hilbert space of site {self.size}"
                 )
 
-        if self._total_sz is not None:
-            raise TypeError(
-                "Cannot take the partial trace with a total magnetization constraint."
-            )
+        if self.constrained:
+            raise TypeError("Cannot take the partial trace with a constraint.")
 
         Nsites = len(sites)
 
@@ -133,9 +226,15 @@ class Spin(HomogeneousHilbert):
             return Spin(s=self._s, N=self.size - Nsites)
 
     def __repr__(self):
-        total_sz = f", total_sz={self._total_sz}" if self._total_sz is not None else ""
-        return f"Spin(s={Fraction(self._s)}{total_sz}, N={self.size})"
+        if self._total_sz is not None:
+            constraint = f", total_sz={self._total_sz}"
+        elif self.constrained:
+            constraint = f", {self._constraint}"
+        else:
+            constraint = ""
+        ordering = "inverted" if self._inverted_ordering else "new"
+        return f"Spin(s={Fraction(self._s)}, N={self.size}, ordering={ordering}{constraint})"
 
     @property
     def _attrs(self):
-        return (self.size, self._s, self._total_sz)
+        return (self.size, self._s, self._inverted_ordering, self.constraint)

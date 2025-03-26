@@ -17,8 +17,9 @@ import abc
 import numpy as np
 from scipy import sparse
 
+import jax
 import jax.numpy as jnp
-from jax.experimental.sparse import JAXSparse, BCOO
+from jax.experimental.sparse import JAXSparse, BCOO, BCSR
 
 from netket.operator import AbstractOperator, DiscreteOperator
 from netket.utils.optional_deps import import_optional_dependency
@@ -171,8 +172,17 @@ class DiscreteJaxOperator(DiscreteOperator):
         sections[:] = n_conns
         return xp, mels
 
+    @jax.jit
     def n_conn(self, x, out=None) -> np.ndarray:
-        r"""Return the number of states connected to x.
+        r"""Return the number of (non-zero) connected entries to `x`.
+
+        .. warning::
+
+            This is not the True number of connected entries, because some elements
+            might appear twice (however this should not be too common.)
+
+            Note that this deviates from the Numba implementation, and can generally
+            return a smaller number of connected entries.
 
         Args:
             x (matrix): A matrix of shape (batch_size,hilbert.size) containing
@@ -181,12 +191,15 @@ class DiscreteJaxOperator(DiscreteOperator):
 
         Returns:
             array: The number of connected states x' for each x[i].
-
         """
+        _, mels = self.get_conn_padded(x)
+        nonzeros = jnp.abs(x) > 0
+        _n_conn = nonzeros.sum(axis=-1)
+
         if out is None:
-            out = jnp.full(x.shape[0], self.max_conn_size, dtype=np.int32)
+            out = _n_conn
         else:
-            out[:] = self.max_conn_size
+            out[:] = _n_conn
         return out
 
     def to_sparse(self) -> JAXSparse:
@@ -200,6 +213,11 @@ class DiscreteJaxOperator(DiscreteOperator):
         Returns:
             The sparse jax matrix representation of the operator.
         """
+
+        # TODO: If the operator get_conn_padded uses shard_map, the
+        # replication of all_states will lead to a crash when
+        # the n_samples cannot be divided by the number of ranks.
+        # this should be fixed.
         x = self.hilbert.all_states()
         n = x.shape[0]
         xp, mels = self.get_conn_padded(x)
@@ -207,7 +225,7 @@ class DiscreteJaxOperator(DiscreteOperator):
         i = np.broadcast_to(np.arange(n)[..., None], mels.shape).ravel()
         j = self.hilbert.states_to_numbers(xp).ravel()
         ij = np.concatenate((i[:, None], j[:, None]), axis=1)
-        return BCOO((a, ij), shape=(n, n))
+        return BCSR.from_bcoo(BCOO((a, ij), shape=(n, n)))
 
     def to_dense(self) -> np.ndarray:
         r"""Returns the dense matrix representation of the operator. Note that,
@@ -233,10 +251,11 @@ class DiscreteJaxOperator(DiscreteOperator):
         # QuTiP does not like jax sparse matrices, so we convert to scipy sparse
         # by hand
         sparse_mat_jax = self.to_sparse()
-        sparse_mat_scipy = sparse.coo_matrix(
+        sparse_mat_scipy = sparse.csr_matrix(
             (
                 sparse_mat_jax.data,
-                (sparse_mat_jax.indices[:, 0], sparse_mat_jax.indices[:, 1]),
+                sparse_mat_jax.indices,
+                sparse_mat_jax.indptr,
             ),
             shape=sparse_mat_jax.shape,
         )
@@ -245,11 +264,9 @@ class DiscreteJaxOperator(DiscreteOperator):
         )
 
     def __matmul__(self, other):
-        if (
-            isinstance(other, np.ndarray)
-            or isinstance(other, jnp.ndarray)
-            or isinstance(other, JAXSparse)
-        ):
+        if isinstance(other, JAXSparse):
+            return self.apply(other.todense())
+        elif isinstance(other, np.ndarray) or isinstance(other, jnp.ndarray):
             return self.apply(other)
         elif isinstance(other, AbstractOperator):
             return self._op__matmul__(other)
@@ -267,3 +284,11 @@ class DiscreteJaxOperator(DiscreteOperator):
             return self._op__rmatmul__(other)
         else:
             return NotImplemented
+
+    def to_jax_operator(self) -> "DiscreteJaxOperator":
+        """
+        Return the JAX version of this operator.
+
+        If this is a JAX operator does nothing.
+        """
+        return self

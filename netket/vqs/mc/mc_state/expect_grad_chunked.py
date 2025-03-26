@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Union
+from typing import Any
 import warnings
 
 from flax.core.scope import CollectionFilter, DenyList  # noqa: F401
@@ -49,7 +49,7 @@ def expect_and_grad_chunking_unspecified(  # noqa: F811
 def expect_and_grad_fallback(  # noqa: F811
     vstate: MCState,
     operator: AbstractObservable,
-    chunk_size: Union[int, tuple],
+    chunk_size: int | tuple,
     *args,
     **kwargs,
 ):
@@ -67,8 +67,6 @@ def expect_and_grad_nonhermitian_chunk_fallback(
     **kwargs,
 ):
     warnings.warn(
-        ignore_chunk_warning(
-            vstate, Ô, chunk_size, name="expect_and_grad_nonhermitian"
-        )
+        ignore_chunk_warning(vstate, Ô, chunk_size, name="expect_and_grad_nonhermitian")
     )
     return expect_and_grad_nonhermitian(vstate, Ô, None, **kwargs)
